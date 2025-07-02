@@ -1,5 +1,5 @@
 const admin = require('firebase-admin');
-const { sendBirthdayAlert, sendBirthdayListToAdmin } = require('./socket-io'); // Importamos las funciones de socket-io
+const { sendBirthdayAlert } = require('./socket-io'); // Importamos las funciones de socket-io
 
 // Función para obtener la fecha en la zona horaria de Colombia (ajuste manual a UTC-5)
 const getTodayInColombia = () => {
@@ -46,7 +46,7 @@ const sendBirthdayAlerts = async (userId, userType, socket, io) => {
   }
 };
 
-// Función para enviar la lista de cumpleaños a todos los clientes con cumpleaños en los próximos 2 días al admin
+// FUNCION QUE ENVÍA LA LISTA DE CUMPLEAÑOS A LOS ADMIN
 const sendBirthdayListToAdmin = async (io, today, nextTwoDays) => {
   const db = admin.firestore();
   const usersRef = db.collection('users');
@@ -76,4 +76,4 @@ const sendBirthdayListToAdmin = async (io, today, nextTwoDays) => {
   }
 };
 
-module.exports = { sendBirthdayAlerts, sendBirthdayListToAdmin };
+module.exports = { sendBirthdayAlerts };
