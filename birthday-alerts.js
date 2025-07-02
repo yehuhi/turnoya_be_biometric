@@ -24,8 +24,13 @@ const sendBirthdayAlerts = async (userId, userType, socket, io) => {
 
   if (user) {
     const today = getTodayInColombia(); // Obtener la fecha de hoy
-    const nextTwoDays = getNextDaysInColombia(2); // Obtener la fecha de los próximos dos días
-    const birthdate = new Date(user.birthdate);
+    const birthdate = new Date(user.birthdate); // Intentamos convertir el birthdate a una fecha
+
+    // Verificar si birthdate es válido
+    if (isNaN(birthdate)) {
+      console.log('Fecha de cumpleaños no válida para', user.fullName);
+      return;
+    }
 
     // Verificar si el usuario tiene cumpleaños hoy
     if (birthdate.getDate() === today.getDate() && birthdate.getMonth() === today.getMonth()) {
@@ -35,11 +40,6 @@ const sendBirthdayAlerts = async (userId, userType, socket, io) => {
       if (userType === 'client') {
         sendBirthdayAlert(io, { message: `¡Feliz cumpleaños, ${user.fullName}! 🎉` });
       }
-    }
-    
-    // Si el tipo de usuario es admin, enviar la lista de clientes con cumpleaños hoy y los próximos 2 días
-    if (userType === 'admin') {
-      sendBirthdayListToAdmin(io, today, nextTwoDays); // Enviar lista de clientes con cumpleaños hoy y en los próximos 2 días
     }
   } else {
     console.log('Usuario no encontrado');
@@ -57,6 +57,12 @@ const sendBirthdayListToAdmin = async (io, today, nextTwoDays) => {
   snapshot.forEach((doc) => {
     const user = doc.data();
     const birthdate = new Date(user.birthdate);
+
+    // Verificar si la fecha de cumpleaños es válida
+    if (isNaN(birthdate)) {
+      console.log('Fecha de cumpleaños no válida para', user.fullName);
+      return; // Saltar si la fecha es inválida
+    }
 
     // Solo comparamos el mes y el día, no el año, y verificamos si el cumpleaños está dentro de los próximos 2 días
     if (
