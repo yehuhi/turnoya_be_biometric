@@ -26,18 +26,19 @@ const sendBirthdayAlerts = async (userId, userType, socket, io) => {
     const today = getTodayInColombia(); // Obtener la fecha de hoy
     const birthdateStr = user.birthdate;
 
-    // Verificar si el campo `birthdate` existe y es válido
-    if (!birthdateStr) {
-      console.log(`El usuario ${user.fullName} no tiene fecha de nacimiento definida.`);
+    // Verificar si el campo `birthdate` existe y es un string
+    if (!birthdateStr || typeof birthdateStr !== 'string') {
+      console.log(`El usuario ${user.fullName} no tiene fecha de nacimiento definida o la tiene mal formateada.`);
       return;
     }
 
+    // Intentamos convertir `birthdateStr` a un objeto Date
     const birthdate = new Date(birthdateStr); // Convertir la fecha a un objeto Date
 
     // Verificar si la fecha es válida
     if (isNaN(birthdate)) {
-      console.log(`Fecha de cumpleaños no válida para ${user.fullName}`);
-      return;
+      console.log(`Fecha de cumpleaños no válida para ${user.fullName}: ${birthdateStr}`);
+      return; // Saltar si la fecha es inválida
     }
 
     // Verificar si el usuario tiene cumpleaños hoy
@@ -66,17 +67,18 @@ const sendBirthdayListToAdmin = async (io, today, nextTwoDays) => {
     const user = doc.data();
     const birthdateStr = user.birthdate;
 
-    // Verificar si el campo `birthdate` existe y es válido
-    if (!birthdateStr) {
-      console.log(`El usuario ${user.fullName} no tiene fecha de nacimiento definida.`);
+    // Verificar si el campo `birthdate` existe y es un string
+    if (!birthdateStr || typeof birthdateStr !== 'string') {
+      console.log(`El usuario ${user.fullName} no tiene fecha de nacimiento definida o la tiene mal formateada.`);
       return; // Saltar si no tiene fecha de nacimiento
     }
 
+    // Intentamos convertir `birthdateStr` a un objeto Date
     const birthdate = new Date(birthdateStr); // Convertir la fecha a un objeto Date
 
     // Verificar si la fecha es válida
     if (isNaN(birthdate)) {
-      console.log(`Fecha de cumpleaños no válida para ${user.fullName}`);
+      console.log(`Fecha de cumpleaños no válida para ${user.fullName}: ${birthdateStr}`);
       return; // Saltar si la fecha es inválida
     }
 
