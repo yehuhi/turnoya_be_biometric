@@ -9,7 +9,7 @@ const getTodayInColombia = () => {
 };
 
 // Función para obtener la fecha de los próximos dos días
-const getNextDaysInColombia = (days = 1) => {
+const getNextDaysInColombia = (days = 2) => {
   const today = getTodayInColombia(); // Fecha de hoy
   today.setDate(today.getDate() + days); // Sumamos los días que necesitamos (2 días)
   return today;
