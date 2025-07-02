@@ -1,11 +1,28 @@
 const express = require('express');
 const http = require('http');
 const socketIo = require('socket.io');
+const cors = require('cors');
 const { sendBirthdayAlerts } = require('./birthday-alerts'); // Importa la función
 
 const app = express();
 const server = http.createServer(app);
-const io = socketIo(server);
+const io = socketIo(server, {
+  cors: {
+    origin: true, // permite cualquier origin en modo desarrollo
+    credentials: true,
+    // origin: 'https://turnoyapp.netlify.app', // Cambiar a la URL de tu frontend
+    // methods: ['GET', 'POST'],
+    // allowedHeaders: ['Content-Type'],
+    // credentials: true, // Si necesitas permitir cookies o credenciales
+  },
+  transports: ['websocket'], // Forzar WebSocket como transporte
+});
+
+
+app.use(cors({
+  origin: true, // permite cualquier origin en modo desarrollo
+  credentials: true,
+}));
 
 app.use(express.json());
 
