@@ -3,7 +3,7 @@ const http = require('http');
 const socketIo = require('socket.io');
 const cors = require('cors');
 const admin = require('firebase-admin');
-const { sendBirthdayAlerts } = require('./birthday-alerts'); // Importamos sendBirthdayAlerts
+const { sendBirthdayAlerts } = require('./birthday-alerts'); // Importar sendBirthdayAlerts
 
 const app = express();
 const server = http.createServer(app);
@@ -11,8 +11,7 @@ const server = http.createServer(app);
 // Configuración de Socket.io
 const io = socketIo(server, {
   cors: {
-    origin: true,
-    // origin: 'https://turnoyapp.netlify.app', // URL del frontend
+    origin: 'https://turnoyapp.netlify.app', // URL del frontend
     methods: ['GET', 'POST'],
     allowedHeaders: ['Content-Type'],
     credentials: true,
@@ -37,8 +36,13 @@ io.on('connection', (socket) => {
   socket.on('authenticate', async (userId, userType) => {
     console.log(`Autenticado: ${userId}, Tipo de usuario: ${userType}`);
     try {
-      // Llamar a sendBirthdayAlerts para verificar el cumpleaños del cliente o enviar la lista al admin
-      await sendBirthdayAlerts(userId, userType, socket, io);
+      // Si el tipo de usuario es admin, le enviamos todos los clientes con cumpleaños hoy
+      if (userType === 'admin') {
+        await sendBirthdayListToAdmin(io); // Enviar la lista de cumpleaños a los admin
+      } else if (userType === 'client') {
+        // Si el tipo de usuario es cliente, verificar si tiene cumpleaños hoy y enviar la alerta
+        await sendBirthdayAlerts(userId, userType, socket, io);
+      }
     } catch (error) {
       console.log('Error al manejar la autenticación del usuario:', error);
     }
