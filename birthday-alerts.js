@@ -24,11 +24,19 @@ const sendBirthdayAlerts = async (userId, userType, socket, io) => {
 
   if (user) {
     const today = getTodayInColombia(); // Obtener la fecha de hoy
-    const birthdate = new Date(user.birthdate); // Intentamos convertir el birthdate a una fecha
+    const birthdateStr = user.birthdate;
 
-    // Verificar si birthdate es válido
+    // Verificar si el campo `birthdate` existe y es válido
+    if (!birthdateStr) {
+      console.log(`El usuario ${user.fullName} no tiene fecha de nacimiento definida.`);
+      return;
+    }
+
+    const birthdate = new Date(birthdateStr); // Convertir la fecha a un objeto Date
+
+    // Verificar si la fecha es válida
     if (isNaN(birthdate)) {
-      console.log('Fecha de cumpleaños no válida para', user.fullName);
+      console.log(`Fecha de cumpleaños no válida para ${user.fullName}`);
       return;
     }
 
@@ -56,11 +64,19 @@ const sendBirthdayListToAdmin = async (io, today, nextTwoDays) => {
 
   snapshot.forEach((doc) => {
     const user = doc.data();
-    const birthdate = new Date(user.birthdate);
+    const birthdateStr = user.birthdate;
 
-    // Verificar si la fecha de cumpleaños es válida
+    // Verificar si el campo `birthdate` existe y es válido
+    if (!birthdateStr) {
+      console.log(`El usuario ${user.fullName} no tiene fecha de nacimiento definida.`);
+      return; // Saltar si no tiene fecha de nacimiento
+    }
+
+    const birthdate = new Date(birthdateStr); // Convertir la fecha a un objeto Date
+
+    // Verificar si la fecha es válida
     if (isNaN(birthdate)) {
-      console.log('Fecha de cumpleaños no válida para', user.fullName);
+      console.log(`Fecha de cumpleaños no válida para ${user.fullName}`);
       return; // Saltar si la fecha es inválida
     }
 
