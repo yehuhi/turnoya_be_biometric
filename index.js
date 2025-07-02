@@ -3,7 +3,7 @@ const http = require('http');
 const socketIo = require('socket.io');
 const cors = require('cors');
 const admin = require('firebase-admin');
-const { sendBirthdayAlerts } = require('./birthday-alerts'); // Importamos la función de birthday-alerts
+const { sendBirthdayAlerts } = require('./birthday-alerts'); // Importamos sendBirthdayAlerts
 
 const app = express();
 const server = http.createServer(app);
@@ -35,6 +35,7 @@ io.on('connection', (socket) => {
 
   // Evento para cuando el cliente se autentica (por ejemplo, con su ID de usuario)
   socket.on('authenticate', async (userId, userType) => {
+    console.log(`Autenticado: ${userId}, Tipo de usuario: ${userType}`);
     try {
       // Llamar a sendBirthdayAlerts para verificar el cumpleaños del cliente o enviar la lista al admin
       await sendBirthdayAlerts(userId, userType, socket, io);
