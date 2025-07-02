@@ -3,7 +3,7 @@ const http = require('http');
 const socketIo = require('socket.io');
 const cors = require('cors');
 const admin = require('firebase-admin');
-const { sendBirthdayAlerts } = require('./birthday-alerts'); // Importar sendBirthdayAlerts
+const { sendBirthdayAlerts, sendBirthdayListToAdmin } = require('./birthday-alerts'); // Importar sendBirthdayAlerts y sendBirthdayListToAdmin
 
 const app = express();
 const server = http.createServer(app);
@@ -11,9 +11,10 @@ const server = http.createServer(app);
 // Configuración de Socket.io
 const io = socketIo(server, {
   cors: {
-    origin: 'https://turnoyapp.netlify.app', // URL del frontend
-    methods: ['GET', 'POST'],
-    allowedHeaders: ['Content-Type'],
+    origin: true,
+    // origin: 'https://turnoyapp.netlify.app', // URL del frontend
+    // methods: ['GET', 'POST'],
+    // allowedHeaders: ['Content-Type'],
     credentials: true,
   },
   transports: ['websocket'], // Forzar el uso de WebSocket
