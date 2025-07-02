@@ -1,4 +1,3 @@
-// Función para obtener la fecha en la zona horaria de Colombia (ajuste manual a UTC-5)
 const admin = require('firebase-admin');
 const { sendBirthdayAlert } = require('./socket-io'); // Importamos las funciones de socket-io
 
@@ -6,13 +5,6 @@ const { sendBirthdayAlert } = require('./socket-io'); // Importamos las funcione
 const getTodayInColombia = () => {
   const today = new Date(); // Fecha y hora actuales en UTC
   today.setHours(today.getHours() - 5); // Ajuste a UTC-5 para Colombia
-  return today;
-};
-
-// Función para obtener la fecha de los próximos dos días
-const getNextDaysInColombia = (days = 2) => {
-  const today = getTodayInColombia(); // Fecha de hoy
-  today.setDate(today.getDate() + days); // Sumamos los días que necesitamos (2 días)
   return today;
 };
 
@@ -59,17 +51,15 @@ const sendBirthdayAlerts = async (userId, userType, socket, io) => {
 // FUNCION QUE ENVÍA LA LISTA DE CUMPLEAÑOS A LOS ADMIN
 const sendBirthdayListToAdmin = async (io) => {
   try {
-    // Calcular las fechas dentro de la función
     const today = getTodayInColombia();
-    const nextTwoDays = getNextDaysInColombia(2);
     
-    console.log(`Buscando cumpleaños para hoy: ${today.toDateString()} y próximos días: ${nextTwoDays.toDateString()}`);
+    console.log(`Buscando cumpleaños para hoy: ${today.toDateString()}`);
     
     const db = admin.firestore();
     const usersRef = db.collection('users');
     const snapshot = await usersRef.get();
 
-    const usersWithBirthdayInNextTwoDays = [];
+    const usersWithBirthdayToday = [];
 
     snapshot.forEach((doc) => {
       const user = doc.data();
@@ -81,7 +71,6 @@ const sendBirthdayListToAdmin = async (io) => {
         return; // Saltar si no tiene fecha de nacimiento
       }
 
-      // Intentamos convertir `birthdateStr` a un objeto Date
       const birthdate = new Date(birthdateStr); // Convertir la fecha a un objeto Date
 
       // Verificar si la fecha es válida
@@ -90,25 +79,22 @@ const sendBirthdayListToAdmin = async (io) => {
         return; // Saltar si la fecha es inválida
       }
 
-      // Solo comparamos el mes y el día, no el año, y verificamos si el cumpleaños está dentro de los próximos 2 días
-      if (
-        (birthdate.getDate() === today.getDate() && birthdate.getMonth() === today.getMonth()) || // Cumpleaños hoy
-        (birthdate.getDate() === nextTwoDays.getDate() && birthdate.getMonth() === nextTwoDays.getMonth()) // Cumpleaños dentro de los próximos 2 días
-      ) {
+      // Solo comparamos el mes y el día, no el año, y verificamos si el cumpleaños es hoy
+      if (birthdate.getDate() === today.getDate() && birthdate.getMonth() === today.getMonth()) {
         console.log(`Usuario con cumpleaños encontrado: ${user.fullName} - ${birthdateStr}`);
-        usersWithBirthdayInNextTwoDays.push(user);
+        usersWithBirthdayToday.push(user);
       }
     });
 
-    // Enviar la lista de clientes con cumpleaños en los próximos 2 días al admin
-    if (usersWithBirthdayInNextTwoDays.length > 0) {
+    // Enviar la lista de clientes con cumpleaños hoy al admin
+    if (usersWithBirthdayToday.length > 0) {
       io.emit('admin_birthday_list', { 
-        message: 'Clientes con cumpleaños hoy y los próximos 2 días:', 
-        data: usersWithBirthdayInNextTwoDays 
+        message: 'Clientes con cumpleaños hoy:', 
+        data: usersWithBirthdayToday 
       });
-      console.log(`Lista de cumpleaños enviada al admin con ${usersWithBirthdayInNextTwoDays.length} usuarios.`);
+      console.log(`Lista de cumpleaños enviada al admin con ${usersWithBirthdayToday.length} usuarios.`);
     } else {
-      console.log('No hay usuarios con cumpleaños hoy o en los próximos 2 días.');
+      console.log('No hay usuarios con cumpleaños hoy.');
     }
   } catch (error) {
     console.error('Error en sendBirthdayListToAdmin:', error);
