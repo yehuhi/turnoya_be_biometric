@@ -92,6 +92,7 @@ const sendBirthdayListToAdmin = async (io) => {
         usersWithBirthdayToday.push(user);
       }
     });
+console.log("ASI SE ENVIA AL ADMIN FE --> ", usersWithBirthdayToday);
 
     // Enviar la lista de clientes con cumpleaños hoy al admin
     if (usersWithBirthdayToday.length > 0) {
