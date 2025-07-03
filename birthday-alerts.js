@@ -8,6 +8,13 @@ const getTodayInColombia = () => {
   return today;
 };
 
+// Función para obtener la fecha de los próximos dos días
+const getNextDaysInColombia = (days = 2) => {
+  const today = getTodayInColombia(); // Fecha de hoy
+  today.setDate(today.getDate() + days); // Sumamos los días que necesitamos (2 días)
+  return today;
+};
+
 // Función para emitir alertas de cumpleaños a clientes cuando se logean
 const sendBirthdayAlerts = async (userId, userType, socket, io) => {
   const db = admin.firestore();
@@ -40,7 +47,7 @@ const sendBirthdayAlerts = async (userId, userType, socket, io) => {
       
       // Emitir la alerta de cumpleaños solo al cliente
       if (userType === 'client') {
-        sendBirthdayAlert(io, { message: `¡Feliz cumpleaños, ${user.fullName}! 🎉` });
+        sendBirthdayAlert(io, { message: `¡Feliz cumpleaños, ${user.fullName}! 🎉`, user });
       }
     }
   } else {
