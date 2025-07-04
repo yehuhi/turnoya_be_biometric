@@ -4,6 +4,7 @@ const socketIo = require('socket.io');
 const cors = require('cors');
 const admin = require('firebase-admin');
 const { sendBirthdayAlerts, sendBirthdayListToAdmin } = require('./birthday-alerts'); // Importar sendBirthdayAlerts y sendBirthdayListToAdmin
+const { sendDiscountAlert, sendBirthdayAlert, sendBarberAlert, sendAlertToClientGroup } = require('./socket-io'); // Asegúrate de que esta línea esté correcta
 
 const app = express();
 const server = http.createServer(app);
@@ -28,6 +29,143 @@ const serviceAccount = require('./firebase-config.json');
 admin.initializeApp({
   credential: admin.credential.cert(serviceAccount),
 });
+
+// Escuchar cambios en la colección 'alerts' de Firestore
+const db = admin.firestore();
+db.collection('alerts').onSnapshot((snapshot) => {
+  snapshot.docChanges().forEach(async (change) => {
+    if (change.type === 'added' || change.type === 'modified') {
+      const alertData = change.doc.data();
+
+      console.log(`Alerta recibida: ${alertData.message}`);
+
+      // Verifica que clientClassifications esté presente
+      const clientClassifications = alertData.clientClassifications;
+      if (!clientClassifications || clientClassifications.length === 0) {
+        console.error('No se ha proporcionado ningún grupo de clientes para esta alerta');
+        return;
+      }
+
+      try {
+        // Iterar sobre cada grupo de clientes
+        for (const groupId of clientClassifications) {
+          const groupRef = db.collection('clientClassifications').doc(groupId);
+          const groupSnapshot = await groupRef.get();
+          
+          if (groupSnapshot.exists) {
+            const group = groupSnapshot.data();
+            const clientIds = group.users; // Array con los IDs de los clientes
+
+            // Verifica que el grupo tenga clientes asignados
+            if (!clientIds || clientIds.length === 0) {
+              console.error(`El grupo ${groupId} no tiene clientes asignados`);
+              continue;
+            }
+
+            // Obtener los datos de los clientes o empleados
+            const usersRef = db.collection(group.userType === 'Clientes' ? 'users' : 'workers');
+            const clients = await usersRef.where(admin.firestore.FieldPath.documentId(), 'in', clientIds).get();
+
+            // Emitir la alerta a cada cliente
+                clients.forEach(clientDoc => {
+                const clientData = clientDoc.data();
+                const clientId = clientDoc.id;  // Accedemos al ID del documento correctamente
+                console.log(`Enviando alerta a ${clientData.fullName} (ID: ${clientId})`);
+
+                // Crear el mensaje con la información necesaria
+                const alertMessage = {
+                    message: alertData.message,
+                    messageName: alertData.name,
+                    designTemplateId: alertData.designTemplateId,
+                    startDate: alertData.startDate,
+                    endDate: alertData.endDate,
+                    items: alertData.items,
+                    phone: clientData.phoneNumber || clientData.phone,
+                    name: clientData.fullName || 'Desconocido',
+                };
+
+                // Emitir la alerta solo al cliente
+                sendAlertToClientGroup(io, clientId, alertMessage); // Emitir alerta solo al cliente
+                });
+
+          } else {
+            console.error(`No se encontró el grupo con ID: ${groupId}`);
+          }
+        }
+      } catch (error) {
+        console.error('Error al obtener los grupos o los clientes:', error);
+      }
+    }
+  });
+});
+
+
+// Escuchar cambios en la colección 'discounts' de Firestore
+db.collection('discounts').onSnapshot((snapshot) => {
+  snapshot.docChanges().forEach(async (change) => {
+    if (change.type === 'added' || change.type === 'modified') {
+      const alertData = change.doc.data();
+      console.log(`Alerta de descuento recibida: ${alertData.description}`);
+
+      // Obtener los grupos de clientes a los que se enviará la alerta
+      const clientClassifications = alertData.clientClassifications;
+      if (!clientClassifications || clientClassifications.length === 0) {
+        console.error('No se ha proporcionado ningún grupo de clientes para esta alerta');
+        return;
+      }
+
+      try {
+        // Iterar sobre cada grupo de clientes
+        for (const groupId of clientClassifications) {
+          const groupRef = db.collection('clientClassifications').doc(groupId);
+          const groupSnapshot = await groupRef.get();
+
+          if (groupSnapshot.exists) {
+            const group = groupSnapshot.data();
+            const clientIds = group.users; // Array con los IDs de los clientes
+
+            // Verificar que el grupo tenga clientes asignados
+            if (!clientIds || clientIds.length === 0) {
+              console.error(`El grupo ${groupId} no tiene clientes asignados`);
+              continue;
+            }
+
+            // Obtener los datos de los clientes o empleados
+            const usersRef = db.collection(group.userType === 'Clientes' ? 'users' : 'workers');
+            const clients = await usersRef.where(admin.firestore.FieldPath.documentId(), 'in', clientIds).get();
+
+            // Emitir la alerta a cada cliente
+            clients.forEach(clientDoc => {
+              const clientData = clientDoc.data();
+              const clientId = clientDoc.id;  // Accedemos al ID del documento correctamente
+              console.log(`Enviando alerta a ${clientData.fullName} (ID: ${clientId})`);
+
+              // Crear el mensaje con la información necesaria
+              const alertMessage = {
+                message: alertData.description,
+                messageName: alertData.name,
+                designTemplateId: alertData.designTemplateId,
+                startDate: alertData.startDate,
+                endDate: alertData.endDate,
+                items: alertData.items,
+                phone: clientData.phoneNumber || clientData.phone,
+                name: clientData.fullName || 'Desconocido',
+              };
+
+              // Emitir la alerta solo al cliente
+              sendAlertToClientGroup(io, clientId, alertMessage); // Emitir alerta solo al cliente
+            });
+          } else {
+            console.error(`No se encontró el grupo con ID: ${groupId}`);
+          }
+        }
+      } catch (error) {
+        console.error('Error al obtener los grupos o los clientes:', error);
+      }
+    }
+  });
+});
+
 
 // Evento cuando un cliente se conecta
 io.on('connection', (socket) => {
