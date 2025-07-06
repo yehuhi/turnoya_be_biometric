@@ -138,7 +138,7 @@ db.collection('discounts').onSnapshot((snapshot) => {
             clients.forEach(clientDoc => {
               const clientData = clientDoc.data();
               const clientId = clientDoc.id;  // Accedemos al ID del documento correctamente
-            //   console.log(`Enviando alerta a ${clientData.fullName} (ID: ${clientId})`);
+              console.log(`Enviando alerta DESCUENTO a ${clientData.fullName} (ID: ${clientId})`);
 
               // Crear el mensaje con la información necesaria
               const alertMessage = {

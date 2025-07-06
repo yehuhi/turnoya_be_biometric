@@ -74,7 +74,7 @@ const sendAlertToGroup = async (clientIds, alertData, io) => {
   // Emitir la alerta a cada cliente
   clients.forEach(clientDoc => {
     const clientData = clientDoc.data();
-    // console.log(`Enviando alerta a ${clientData.fullName} (ID: ${clientData.id})`);
+    console.log(`Enviando alerta a ${clientData.fullName} (ID: ${clientData.id})`);
 
     // Crear el mensaje con la información necesaria
     const alertMessage = {
