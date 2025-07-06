@@ -70,7 +70,7 @@ db.collection('alerts').onSnapshot((snapshot) => {
                 clients.forEach(clientDoc => {
                 const clientData = clientDoc.data();
                 const clientId = clientDoc.id;  // Accedemos al ID del documento correctamente
-                console.log(`Enviando alerta a ${clientData.fullName} (ID: ${clientId})`);
+                // console.log(`Enviando alerta a ${clientData.fullName} (ID: ${clientId})`);
 
                 // Crear el mensaje con la información necesaria
                 const alertMessage = {
@@ -138,7 +138,7 @@ db.collection('discounts').onSnapshot((snapshot) => {
             clients.forEach(clientDoc => {
               const clientData = clientDoc.data();
               const clientId = clientDoc.id;  // Accedemos al ID del documento correctamente
-              console.log(`Enviando alerta a ${clientData.fullName} (ID: ${clientId})`);
+            //   console.log(`Enviando alerta a ${clientData.fullName} (ID: ${clientId})`);
 
               // Crear el mensaje con la información necesaria
               const alertMessage = {
@@ -165,6 +165,118 @@ db.collection('discounts').onSnapshot((snapshot) => {
     }
   });
 });
+
+
+// Escuchar cambios en la colección 'birthdayAlerts' de Firestore
+db.collection('birthdayAlerts').onSnapshot((snapshot) => {
+  snapshot.docChanges().forEach(async (change) => {
+    if (change.type === 'added' || change.type === 'modified') {
+      const alertData = change.doc.data();
+      console.log(`Alerta de cumpleaños recibida: ${alertData.message}`);
+
+      // Verificar si el grupo está presente
+      const clientClassifications = alertData.customerClassifications;
+      if (!clientClassifications || clientClassifications.length === 0) {
+        console.error('No se ha proporcionado ningún grupo de clientes para esta alerta de cumpleaños');
+        return;
+      }
+
+      const today = new Date(); // Obtener la fecha de hoy
+      const startDate = alertData.startDate.toDate(); // Convertir a objeto Date
+      const endDate = alertData.endDate.toDate(); // Convertir a objeto Date
+
+      // Verificar si la fecha de hoy está dentro del rango de la alerta
+      if (today < startDate || today > endDate) {
+        console.log('La fecha de hoy no está dentro del rango de la alerta');
+        return; // Si no está dentro del rango, no enviamos la alerta
+      }
+
+      try {
+        // Iterar sobre cada grupo de clientes
+        for (const groupId of clientClassifications) {
+          const groupRef = db.collection('clientClassifications').doc(groupId);
+          const groupSnapshot = await groupRef.get();
+
+          if (groupSnapshot.exists) {
+            const group = groupSnapshot.data();
+            const clientIds = group.users;
+
+            // Verificar si el grupo tiene clientes asignados
+            if (!clientIds || clientIds.length === 0) {
+              console.error(`El grupo ${groupId} no tiene clientes asignados`);
+              continue;
+            }
+
+            // Obtener los datos de los clientes o empleados
+            const usersRef = db.collection(group.userType === 'Clientes' ? 'users' : 'workers');
+            const clients = await usersRef.where(admin.firestore.FieldPath.documentId(), 'in', clientIds).get();
+
+            // Emitir la alerta a cada cliente
+            clients.forEach(clientDoc => {
+              const clientData = clientDoc.data();
+              const clientId = clientDoc.id;
+
+              // Verificar si el cumpleaños es hoy
+              const birthdateStr = clientData.birthdate;
+              const birthdate = new Date(birthdateStr);
+              console.log(`Fecha de cumpleaños de ${clientData.fullName}: ${birthdate}`);
+
+              if (birthdate.getDate() === today.getDate() && birthdate.getMonth() === today.getMonth()) {
+                console.log(`Enviando alerta de CUMPLEANOS a ${clientData.fullName} (ID: ${clientId})`);
+
+                // Si el cliente está en el grupo, enviar todos los detalles de la alerta
+                const alertMessage = {
+                  message: alertData.message,
+                  messageName: alertData.name,
+                  designTemplateId: alertData.designTemplateId,
+                  startDate: alertData.startDate,
+                  endDate: alertData.endDate,
+                  items: alertData.items,
+                  phone: clientData.phoneNumber || clientData.phone,
+                  name: clientData.fullName || 'Desconocido',
+                };
+
+                // Emitir la alerta solo al cliente
+                sendAlertToClientGroup(io, clientId, alertMessage);
+              }
+            });
+          } else {
+            console.error(`No se encontró el grupo con ID: ${groupId}`);
+          }
+        }
+      } catch (error) {
+        console.error('Error al obtener los grupos o los clientes:', error);
+      }
+    }
+  });
+});
+
+
+// Función que maneja la autenticación
+io.on('connection', (socket) => {
+  console.log('Cliente conectado');
+  
+  socket.on('authenticate', async (userId, userType) => {
+    console.log(`Autenticado: ${userId}, Tipo de usuario: ${userType}`);
+    try {
+      if (userType === 'admin') {
+        await sendBirthdayListToAdmin(io); // Enviar la lista de cumpleaños a los admin
+      } else if (userType === 'client') {
+        await sendBirthdayAlerts(userId, userType, socket, io); // Verificar y enviar alertas de cumpleaños
+      }
+    } catch (error) {
+      console.log('Error al manejar la autenticación del usuario:', error);
+    }
+  });
+
+  socket.on('disconnect', () => {
+    console.log('Cliente desconectado');
+  });
+});
+
+
+
+
 
 
 // Evento cuando un cliente se conecta
