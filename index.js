@@ -424,7 +424,7 @@ server.listen(PORT, async () => {
   if (status.connected) {
        // ⭐ NUEVO: Conectar al stream de eventos en tiempo real
     // connectToAlertStream(io);
-    const stopPolling = startAcsPolling(io);
+    // const stopPolling = startAcsPolling(io);
   } else {
     console.log('❌ Dispositivo Hikvision NO conectado');
     console.log(`   Error: ${status.error}`);
