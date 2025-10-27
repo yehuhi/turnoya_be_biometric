@@ -412,7 +412,7 @@ db.collection('birthdayAlerts').onSnapshot((snapshot) => {
 // INICIAR SERVIDOR
 // ============================================
 const PORT = process.env.PORT || 5000;
-const { startPolling } = require('./polling-service');
+// const { startPolling } = require('./polling-service');
 
 server.listen(PORT, async () => {
   console.log('='.repeat(50));
