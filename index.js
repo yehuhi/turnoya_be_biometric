@@ -6,8 +6,6 @@ const admin = require('firebase-admin');
 const xml2js = require('xml2js');
 const { sendBirthdayAlerts, sendBirthdayListToAdmin } = require('./birthday-alerts');
 const { sendDiscountAlert, sendBirthdayAlert, sendBarberAlert, sendAlertToClientGroup } = require('./socket-io');
-const { connectToAlertStream } = require('./alert-stream-service');
-const { startAcsPolling } = require('./acs-polling');
 
 // ⭐ IMPORTAR SERVICIO HIKVISION
 const {
