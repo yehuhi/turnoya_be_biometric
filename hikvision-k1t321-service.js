@@ -24,10 +24,10 @@ const getDb = () => admin.firestore();
 // CONFIGURACIÓN DEL DISPOSITIVO
 // ============================================
 const DEVICE_CONFIG = {
-  ip: process.env.HIKVISION_IP || '192.168.1.25',
+  ip: process.env.HIKVISION_IP || '192.168.1.13',
   port: parseInt(process.env.HIKVISION_PORT) || 80,
   username: process.env.HIKVISION_USERNAME || 'admin',
-  password: process.env.HIKVISION_PASSWORD || 'Negro2025',
+  password: process.env.HIKVISION_PASSWORD || '1047338633ABC',
   brandId: process.env.HIKVISION_BRAND_ID || '8iaQueOcfYoss5zXJ3IC',
   location: process.env.HIKVISION_LOCATION || 'oRHOHl3HLppb02u4pyVK',
 };
