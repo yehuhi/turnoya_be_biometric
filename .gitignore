@@ -6,3 +6,10 @@ firebase-config.json
 *.pem
 *.key
 
+
+# Secrets
+.env
+firebase-config.json
+*.pem
+*.key
+
