@@ -11,20 +11,29 @@
   "license": "ISC",
   "dependencies": {
     "@mhoc/axios-digest-auth": "^0.8.0",
-    "axios": "^1.12.2",
-    "axios-digest": "^0.3.0",
+    "@peculiar/webcrypto": "^1.5.0",
+    "@xmldom/xmldom": "^0.8.11",
+    "adm-zip": "^0.5.16",
+    "asn1js": "^3.0.7",
+    "axios": "^1.13.2",
     "cors": "^2.8.5",
     "date-fns": "^4.1.0",
     "date-fns-tz": "^3.2.0",
     "dicer": "^0.3.1",
     "digest-fetch": "^3.1.1",
+    "dotenv": "^17.2.3",
     "express": "^5.1.0",
     "firebase-admin": "^13.4.0",
     "net": "^1.0.2",
     "node-cron": "^4.2.0",
     "node-fetch": "^2.7.0",
     "nodemailer": "^7.0.4",
+    "pem": "^1.14.8",
+    "pkijs": "^3.3.3",
     "socket.io": "^4.8.1",
-    "xml2js": "^0.6.2"
+    "xadesjs": "^2.6.5",
+    "xml2js": "^0.6.2",
+    "xmldom": "^0.6.0",
+    "xmldsigjs": "^2.8.5"
   }
 }
