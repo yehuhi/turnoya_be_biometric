@@ -97,20 +97,46 @@ app.use(express.raw({ type: 'application/xml' })); // ⭐ Agregar esta línea
 
 
 // Conexión a Firebase (solo si no está inicializado)
+// let db;
+// try {
+//   // Intentar obtener la app por defecto
+//   db = admin.firestore();
+// } catch (error) {
+//   // Si no existe, inicializarla
+//   const serviceAccount = require('./firebase-config.json');
+//   admin.initializeApp({
+//     credential: admin.credential.cert(serviceAccount),
+//   });
+//   db = admin.firestore();
+// }
+
+// app.locals.db = db;
+
+
+// ✅ Conexión a Firebase (ENV primero, fallback local opcional)
 let db;
-try {
-  // Intentar obtener la app por defecto
-  db = admin.firestore();
-} catch (error) {
-  // Si no existe, inicializarla
-  const serviceAccount = require('./firebase-config.json');
-  admin.initializeApp({
-    credential: admin.credential.cert(serviceAccount),
-  });
-  db = admin.firestore();
+
+if (!admin.apps.length) {
+  if (process.env.FIREBASE_SERVICE_ACCOUNT_JSON) {
+    const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_JSON);
+    admin.initializeApp({
+      credential: admin.credential.cert(serviceAccount),
+    });
+    console.log("✅ Firebase Admin inicializado desde ENV");
+  } else {
+    // ✅ SOLO para desarrollo local (no lo subas a GitHub)
+    const serviceAccount = require('./firebase-config.json');
+    admin.initializeApp({
+      credential: admin.credential.cert(serviceAccount),
+    });
+    console.log("✅ Firebase Admin inicializado desde firebase-config.json (LOCAL)");
+  }
 }
 
+db = admin.firestore();
 app.locals.db = db;
+
+
 
 // Timestamp de inicio del servidor en UTC
 const SERVER_START_TIME = new Date();
