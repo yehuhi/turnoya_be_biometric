@@ -1,1 +1,8 @@
 /node_modules/
+
+# Secrets
+.env
+firebase-config.json
+*.pem
+*.key
+
