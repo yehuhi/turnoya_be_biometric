@@ -33,6 +33,8 @@ const io = socketIo(server, {
 
 app.use(cors());
 
+let isStreamWarmedUp = true; 
+
 //⭐ ENDPOINTS SIN BODY (ANTES de body-parser)
 // Verificar estado del dispositivo
 app.get('/api/hikvision/status', async (req, res) => {
