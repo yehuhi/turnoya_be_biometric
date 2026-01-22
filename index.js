@@ -524,21 +524,31 @@ io.on('connection', (socket) => {
 const PORT = process.env.PORT || 5000;
 // const { startPolling } = require('./polling-service');
 
+// server.listen(PORT, async () => {
+//   console.log('='.repeat(50));
+//   console.log(`🚀 Servidor corriendo en puerto ${PORT}`);
+//   console.log('='.repeat(50));
+
+//   const status = await checkDeviceStatus();
+//   if (status.connected) {
+//     console.log('✅ DS-K1T321MFWX-B conectado');
+    
+//     // ⭐ Iniciar stream de eventos
+//     connectToAlertStream(io);
+//   } else {
+//     console.log('❌ Dispositivo NO conectado');
+//     console.log(`   Error: ${status.error}`);
+//   }
+
+//   console.log('='.repeat(50));
+// });
+
 server.listen(PORT, async () => {
   console.log('='.repeat(50));
   console.log(`🚀 Servidor corriendo en puerto ${PORT}`);
   console.log('='.repeat(50));
 
-  const status = await checkDeviceStatus();
-  if (status.connected) {
-    console.log('✅ DS-K1T321MFWX-B conectado');
-    
-    // ⭐ Iniciar stream de eventos
-    connectToAlertStream(io);
-  } else {
-    console.log('❌ Dispositivo NO conectado');
-    console.log(`   Error: ${status.error}`);
-  }
-
+  console.log('✅ Listo para recibir eventos Hikvision en: /api/hikvision/webhook');
+  console.log('✅ Healthcheck: /health');
   console.log('='.repeat(50));
 });
