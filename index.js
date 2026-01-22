@@ -147,6 +147,11 @@ const SERVER_START_UTC = SERVER_START_TIME.toISOString();
 // ENDPOINTS HIKVISION
 // ============================================
 
+app.get('/api/hikvision/webhook', (req, res) => {
+  res.status(200).send('OK');
+});
+
+
 // Webhook para recibir eventos del dispositivo en tiempo real
 app.post('/api/hikvision/webhook', async (req, res) => {
   try {
