@@ -1,8 +1,4 @@
 // hikvision-k1t321-service.js
-// Servicio completo para DS-K1T321MFWX-B con ISAPI
-// Soporta: eventos en tiempo real, imágenes, huellas, entrada/salida
-// ✅ Incluye: warmup + cooldown 30s para evitar entrada/salida por doble huella
-
 const axios = require('axios');
 const crypto = require('crypto');
 const Dicer = require('dicer');
@@ -11,44 +7,39 @@ const fs = require('fs');
 const path = require('path');
 const admin = require('firebase-admin');
 
-// ===============================
-// CONFIG GENERAL
-// ===============================
-
-// ✅ Flag global para warmup (ARREGLA: isStreamWarmedUp is not defined)
-let isStreamWarmedUp = true;
-
-// ✅ Cooldown anti doble marcación (30s)
-const COOLDOWN_SECONDS = parseInt(process.env.ATTENDANCE_COOLDOWN_SECONDS || '30', 10);
-
-// Crear carpeta para guardar evidencias (imágenes)
+// Carpeta evidencias
 const EVIDENCE_DIR = path.join(__dirname, 'attendance-evidence');
-if (!fs.existsSync(EVIDENCE_DIR)) {
-  fs.mkdirSync(EVIDENCE_DIR, { recursive: true });
-}
+if (!fs.existsSync(EVIDENCE_DIR)) fs.mkdirSync(EVIDENCE_DIR, { recursive: true });
 
-// ⭐ NO obtener db aquí, se obtendrá cuando se use
 const getDb = () => admin.firestore();
 
-// ============================================
-// CONFIGURACIÓN DEL DISPOSITIVO
-// ============================================
+// ============================
+// CONFIG
+// ============================
 const DEVICE_CONFIG = {
-  ip: process.env.HIKVISION_IP || '192.168.1.25',
-  port: parseInt(process.env.HIKVISION_PORT) || 80,
+  ip: process.env.HIKVISION_IP || '192.168.1.13',
+  port: parseInt(process.env.HIKVISION_PORT, 10) || 80,
   username: process.env.HIKVISION_USERNAME || 'admin',
-  password: process.env.HIKVISION_PASSWORD || 'Negro2025',
-  brandId: process.env.HIKVISION_BRAND_ID || '8iaQueOcfYoss5zXJ3IC',
-  location: process.env.HIKVISION_LOCATION || 'oRHOHl3HLppb02u4pyVK',
+  password: process.env.HIKVISION_PASSWORD || '12345',
+  brandId: process.env.HIKVISION_BRAND_ID || 'brand',
+  location: process.env.HIKVISION_LOCATION || 'location',
 };
 
 const baseURL = `http://${DEVICE_CONFIG.ip}:${DEVICE_CONFIG.port}/ISAPI`;
 
-// ============================================
+// Anti doble huella (30s por defecto)
+const COOLDOWN_SECONDS = parseInt(process.env.ATTENDANCE_COOLDOWN_SECONDS || '30', 10);
+
+// Warmup control (para stream; no rompe si no lo usas)
+let isStreamWarmedUp = true;
+function setStreamWarmup(value) {
+  isStreamWarmedUp = !!value;
+}
+
+// ============================
 // DIGEST AUTH SIMPLE
-// ============================================
+// ============================
 async function digestRequest(method, url, options = {}) {
-  // Primer intento sin auth para obtener el challenge
   const firstResponse = await axios({
     method,
     url,
@@ -56,39 +47,22 @@ async function digestRequest(method, url, options = {}) {
     validateStatus: (status) => status === 401 || (status >= 200 && status < 300),
   });
 
-  // Si no requiere auth, retornar
   if (firstResponse.status !== 401) return firstResponse;
 
-  // Parsear el WWW-Authenticate header
   const authHeader = firstResponse.headers['www-authenticate'];
-  if (!authHeader || !authHeader.includes('Digest')) {
-    throw new Error('Digest auth no disponible');
-  }
+  if (!authHeader || !authHeader.includes('Digest')) throw new Error('Digest auth no disponible');
 
   const realm = /realm="([^"]+)"/.exec(authHeader)?.[1] || '';
   const nonce = /nonce="([^"]+)"/.exec(authHeader)?.[1] || '';
   const qop = /qop="([^"]+)"/.exec(authHeader)?.[1] || 'auth';
 
-  // Calcular respuesta digest
-  const ha1 = crypto
-    .createHash('md5')
-    .update(`${DEVICE_CONFIG.username}:${realm}:${DEVICE_CONFIG.password}`)
-    .digest('hex');
-
-  const ha2 = crypto
-    .createHash('md5')
-    .update(`${method.toUpperCase()}:${new URL(url).pathname}`)
-    .digest('hex');
-
+  const ha1 = crypto.createHash('md5').update(`${DEVICE_CONFIG.username}:${realm}:${DEVICE_CONFIG.password}`).digest('hex');
+  const ha2 = crypto.createHash('md5').update(`${method.toUpperCase()}:${new URL(url).pathname}`).digest('hex');
   const nc = '00000001';
   const cnonce = crypto.randomBytes(8).toString('hex');
-  const response = crypto
-    .createHash('md5')
-    .update(`${ha1}:${nonce}:${nc}:${cnonce}:${qop}:${ha2}`)
-    .digest('hex');
+  const response = crypto.createHash('md5').update(`${ha1}:${nonce}:${nc}:${cnonce}:${qop}:${ha2}`).digest('hex');
 
-  // Segunda petición con auth
-  return await axios({
+  return axios({
     method,
     url,
     ...options,
@@ -99,25 +73,18 @@ async function digestRequest(method, url, options = {}) {
   });
 }
 
-let streamConnection = null;
-let reconnectAttempts = 0;
-const MAX_RECONNECT_ATTEMPTS = 10;
-
-// ============================================
-// FUNCIONES DE BÚSQUEDA Y GUARDADO
-// ============================================
-
+// ============================
+// FIND USER
+// ============================
 const findUserByCedula = async (cedula) => {
   const db = getDb();
 
-  // Buscar en barbers
   const barbersSnapshot = await db.collection('barbers').where('cedula', '==', cedula).limit(1).get();
   if (!barbersSnapshot.empty) {
     const doc = barbersSnapshot.docs[0];
     return { found: true, collection: 'barbers', id: doc.id, data: doc.data() };
   }
 
-  // Buscar en workers
   const workersSnapshot = await db.collection('workers').where('cedula', '==', cedula).limit(1).get();
   if (!workersSnapshot.empty) {
     const doc = workersSnapshot.docs[0];
@@ -127,7 +94,9 @@ const findUserByCedula = async (cedula) => {
   return { found: false };
 };
 
-// ⭐ Validar autorización de ubicación y marca
+// ============================
+// AUTH VALIDATION
+// ============================
 const validateUserAuthorization = (userData) => {
   const authorizedLocations = userData.authorizedLocations || [];
   const brandIds = userData.brandIds || [];
@@ -144,23 +113,27 @@ const validateUserAuthorization = (userData) => {
   };
 };
 
+// ============================
+// SAVE ATTENDANCE
+// ============================
 const saveAttendanceRecord = async (data) => {
   const db = getDb();
   const attendanceRef = db.collection('attendance');
-
   const docRef = await attendanceRef.add({
     ...data,
     createdAt: admin.firestore.FieldValue.serverTimestamp(),
   });
-
   console.log('✅ Registro guardado en Firestore:', docRef.id);
   return docRef.id;
 };
 
-// ✅ COOLDOWN: ignora doble huella dentro de 30s
-async function isInCooldown(userId, eventTimestamp) {
+// ============================
+// COOLDOWN CHECK (ANTI DOBLE HUELLA)
+// ============================
+async function isWithinCooldown(userId, eventTimestamp) {
   const db = getDb();
 
+  // Buscamos el último registro del usuario (sin necesidad del rango del día)
   const snap = await db
     .collection('attendance')
     .where('userId', '==', userId)
@@ -168,191 +141,137 @@ async function isInCooldown(userId, eventTimestamp) {
     .limit(1)
     .get();
 
-  if (snap.empty) return false;
+  if (snap.empty) return { blocked: false };
 
   const last = snap.docs[0].data();
-  const lastTs = last.timestamp?.toDate?.() || new Date(last.timestamp);
+  const lastTs = last.timestamp?.toDate ? last.timestamp.toDate() : null;
+  if (!lastTs) return { blocked: false };
+
   const diffSec = (eventTimestamp.getTime() - lastTs.getTime()) / 1000;
+  if (diffSec >= 0 && diffSec < COOLDOWN_SECONDS) {
+    return {
+      blocked: true,
+      diffSec,
+      lastEventType: last.eventType,
+      lastTs,
+    };
+  }
 
-  return diffSec >= 0 && diffSec < COOLDOWN_SECONDS;
+  return { blocked: false, diffSec, lastTs };
 }
 
-// ============================================
-// STREAM DE EVENTOS EN TIEMPO REAL (opcional)
-// ============================================
+// ============================
+// EVENT TYPE DETERMINATION (CHECK_IN / CHECK_OUT)
+// ============================
+async function determineEventType(userId, eventTimestamp) {
+  const db = getDb();
 
-function getBoundary(contentType) {
-  if (!contentType) return null;
-  const m = /boundary="?([^";]+)"?/i.exec(contentType);
-  if (m && m[1]) return m[1].replace(/^--/, '');
-  return null;
+  const startOfDay = new Date(eventTimestamp);
+  startOfDay.setHours(0, 0, 0, 0);
+
+  const endOfDay = new Date(eventTimestamp);
+  endOfDay.setHours(23, 59, 59, 999);
+
+  const lastRecordSnapshot = await db
+    .collection('attendance')
+    .where('userId', '==', userId)
+    .where('timestamp', '>=', admin.firestore.Timestamp.fromDate(startOfDay))
+    .where('timestamp', '<=', admin.firestore.Timestamp.fromDate(endOfDay))
+    .orderBy('timestamp', 'desc')
+    .limit(1)
+    .get();
+
+  if (lastRecordSnapshot.empty) return 'check_in';
+
+  const lastRecord = lastRecordSnapshot.docs[0].data();
+  return lastRecord.eventType === 'check_in' ? 'check_out' : 'check_in';
 }
 
-async function connectToAlertStream(io) {
-  console.log('\n🔌 Conectando al stream de eventos del DS-K1T321MFWX-B...');
-  console.log(`   Dispositivo: ${DEVICE_CONFIG.ip}:${DEVICE_CONFIG.port}`);
-  console.log(`   📍 Location: ${DEVICE_CONFIG.location}`);
-  console.log(`   🏷️  Brand: ${DEVICE_CONFIG.brandId}\n`);
-
-  // ✅ Warmup 15s para ignorar buffer del dispositivo
-  isStreamWarmedUp = false;
-  setTimeout(() => {
-    isStreamWarmedUp = true;
-    console.log('✅ WARMUP COMPLETADO - Procesando eventos en tiempo real\n');
-  }, 15000);
-
-  const url = `${baseURL}/Event/notification/alertStream`;
-
+// ============================
+// PROCESS EVENT (WEBHOOK + STREAM)
+// ============================
+async function processAttendanceEvent(eventData, io) {
   try {
-    const response = await digestRequest('GET', url, {
-      responseType: 'stream',
-      timeout: 0,
-      headers: { Connection: 'keep-alive', Accept: 'multipart/mixed' },
-    });
+    // Normalización para que funcione con JSON y XML
+    const cedula =
+      eventData.cedula ||
+      eventData.employeeNoString ||
+      eventData.employeeNo ||
+      eventData.cardNo;
 
-    streamConnection = response;
+    const method =
+      eventData.method ||
+      eventData.attendanceStatus ||
+      eventData.currentVerifyMode ||
+      'fingerPrint';
 
-    const contentType = response.headers['content-type'] || '';
-    const boundary = getBoundary(contentType);
-    if (!boundary) {
-      console.error('❌ No se pudo determinar el boundary');
-      attemptReconnect(io);
+    const tsStr =
+      eventData.timestamp ||
+      eventData.dateTime ||
+      new Date().toISOString();
+
+    const eventTimestamp = parseHikvisionDate(tsStr);
+
+    if (!cedula) {
+      console.warn('⚠️ Evento sin cédula - IGNORADO');
       return;
     }
 
-    console.log('✅ Conectado al stream de eventos');
-    console.log('📡 Escuchando eventos en tiempo real...\n');
+    // Validar cedula (evitar serialNo del dispositivo)
+    const cedulaNumber = parseInt(cedula, 10);
+    if (isNaN(cedulaNumber) || cedulaNumber < 1000) {
+      console.warn(`⚠️ Identificador inválido (${cedula}) - probablemente serialNo - IGNORADO`);
+      return;
+    }
 
-    reconnectAttempts = 0;
+    if (method === 'invalid' || method === 'unknown') {
+      console.warn(`⚠️ Método inválido (${method}) - IGNORADO`);
+      return;
+    }
 
-    const dicer = new Dicer({ boundary });
-    let currentEventData = {};
+    console.log(`\n🔍 Buscando usuario con cédula: ${cedula}`);
+    const user = await findUserByCedula(String(cedula));
 
-    dicer.on('part', (part) => {
-      let partType = 'bin';
-      let chunks = [];
-
-      part.on('header', (hdrs) => {
-        const type = (hdrs['content-type']?.[0] || '').toLowerCase();
-        if (type.includes('xml')) partType = 'xml';
-        else if (type.includes('jpeg') || type.includes('jpg')) partType = 'jpg';
-        else if (type.includes('png')) partType = 'png';
-      });
-
-      part.on('data', (d) => chunks.push(d));
-
-      part.on('end', async () => {
-        const buf = Buffer.concat(chunks);
-
-        if (partType === 'xml') {
-          const xmlStr = buf.toString('utf8');
-          currentEventData = await parseEvent(xmlStr);
-        } else if (partType === 'jpg' || partType === 'png') {
-          if (currentEventData.cedula) {
-            const filename = `${currentEventData.cedula}_${Date.now()}.${partType}`;
-            const filepath = path.join(EVIDENCE_DIR, filename);
-            fs.writeFileSync(filepath, buf);
-            currentEventData.imageUrl = filepath;
-            console.log(`📸 Imagen guardada: ${filename}`);
-          }
-        }
-
-        if (currentEventData.cedula && Object.keys(currentEventData).length > 2) {
-          await processAttendanceEvent(currentEventData, io);
-          currentEventData = {};
-        }
-      });
-    });
-
-    dicer.on('error', (err) => {
-      console.error('❌ Error en parser:', err.message);
-      attemptReconnect(io);
-    });
-
-    response.data.on('error', (err) => {
-      console.error('❌ Error en stream:', err.message);
-      attemptReconnect(io);
-    });
-
-    response.data.on('end', () => {
-      console.log('⚠️ Stream cerrado');
-      attemptReconnect(io);
-    });
-
-    response.data.pipe(dicer);
-  } catch (error) {
-    console.error('❌ Error conectando al stream:', error.message);
-    attemptReconnect(io);
-  }
-}
-
-async function parseEvent(xmlData) {
-  try {
-    const parser = new xml2js.Parser({ explicitArray: false });
-    const result = await parser.parseStringPromise(xmlData);
-
-    const event = result.EventNotificationAlert;
-    if (!event) return {};
-
-    const cedula = event.employeeNoString || event.employeeNo || event.cardNo;
-    const method = event.attendanceStatus || event.currentVerifyMode || 'unknown';
-    const timestamp = event.dateTime || new Date().toISOString();
-
-    return {
-      cedula,
-      method,
-      timestamp,
-      eventType: 'check_in',
-      rawEvent: event,
-    };
-  } catch (error) {
-    console.error('❌ Error parseando XML:', error.message);
-    return {};
-  }
-}
-
-// ============================================
-// PROCESAR EVENTO (AQUÍ VA EL FIX PRINCIPAL)
-// ============================================
-
-async function processAttendanceEvent(eventData, io) {
-  try {
-    const { cedula, method, timestamp } = eventData;
-
-    if (!cedula) return;
-
-    // Validar que la cédula sea válida
-    const cedulaNumber = parseInt(cedula);
-    if (isNaN(cedulaNumber) || cedulaNumber < 1000) return;
-
-    // Validar método
-    if (method === 'invalid' || method === 'unknown') return;
-
-    const user = await findUserByCedula(cedula);
-    if (!user.found) return;
-
-    // Validar autorización brand/location
-    const authorization = validateUserAuthorization(user.data);
-    if (!authorization.isAuthorized) return;
-
-    const eventTimestamp = new Date(timestamp);
-
-    // ✅ COOLDOWN 30s (EVITA check_in/check_out por doble huella)
-    if (await isInCooldown(user.id, eventTimestamp)) {
-      console.log(`⏭️ COOLDOWN (${COOLDOWN_SECONDS}s): Ignorado doble marcado -> ${user.data.fullName} (${cedula})`);
+    if (!user.found) {
+      console.warn(`⚠️ Usuario con cédula ${cedula} NO ENCONTRADO`);
       if (io) {
-        io.emit('attendance:cooldown_ignored', {
-          userId: user.id,
+        io.emit('attendance:unknown_user', {
           cedula,
-          fullName: user.data.fullName,
           timestamp: eventTimestamp,
-          cooldownSeconds: COOLDOWN_SECONDS,
+          method,
+          message: `Usuario con cédula ${cedula} intentó marcar pero no está en el sistema`,
         });
       }
       return;
     }
 
-    // Determinar check_in / check_out según último registro del día
+    // Validar autorización
+    const authorization = validateUserAuthorization(user.data);
+    if (!authorization.isAuthorized) {
+      console.warn(`❌ ACCESO NO AUTORIZADO: ${user.data.fullName} (${cedula})`);
+      if (io) {
+        io.emit('attendance:unauthorized_access', {
+          cedula,
+          fullName: user.data.fullName,
+          timestamp: eventTimestamp,
+          location: DEVICE_CONFIG.location,
+          brandId: DEVICE_CONFIG.brandId,
+          reason: !authorization.hasLocationAccess ? 'location_not_authorized' : 'brand_not_authorized',
+        });
+      }
+      return;
+    }
+
+    // ✅ Anti doble huella (30s)
+    const cooldown = await isWithinCooldown(user.id, eventTimestamp);
+    if (cooldown.blocked) {
+      console.warn(
+        `⏱️ COOLDOWN (${COOLDOWN_SECONDS}s): Ignorando marca duplicada. ` +
+        `Última hace ${cooldown.diffSec.toFixed(1)}s (last=${cooldown.lastEventType})`
+      );
+      return;
+    }
+
     const determinedEventType = await determineEventType(user.id, eventTimestamp);
 
     const attendanceData = {
@@ -362,6 +281,12 @@ async function processAttendanceEvent(eventData, io) {
       fullName: user.data.fullName,
       email: user.data.email || '',
       phoneNumber: user.data.phoneNumber || user.data.phone || '',
+      role: user.data.role || '',
+      userType: user.data.userType || '',
+      userTypeName: user.data.userTypeName || user.data.role || '',
+
+      branch: user.data.branch || user.data.companies || '',
+      branchName: user.data.branchName || '',
 
       brandId: DEVICE_CONFIG.brandId,
       location: DEVICE_CONFIG.location,
@@ -369,11 +294,12 @@ async function processAttendanceEvent(eventData, io) {
       timestamp: admin.firestore.Timestamp.fromDate(eventTimestamp),
       eventType: determinedEventType,
       verificationMethod: method || 'fingerPrint',
+
       deviceId: DEVICE_CONFIG.ip,
       status: 'success',
-      createdAt: admin.firestore.FieldValue.serverTimestamp(),
     };
 
+    console.log(`💾 Guardando asistencia: ${attendanceData.fullName} (${attendanceData.eventType})`);
     const recordId = await saveAttendanceRecord(attendanceData);
 
     if (io) {
@@ -386,75 +312,33 @@ async function processAttendanceEvent(eventData, io) {
 
     return recordId;
   } catch (error) {
-    console.error('❌ Error procesando evento:', error.message);
+    console.error('❌ Error procesando evento:', error);
   }
 }
 
-function attemptReconnect(io) {
-  if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
-    console.error(`❌ Máximo de intentos alcanzado. Reinicia el servidor.`);
-    return;
-  }
-  reconnectAttempts++;
-  const delay = Math.min(5000 * reconnectAttempts, 30000);
-  setTimeout(() => connectToAlertStream(io), delay);
+// Hikvision date parsing (sin timezone => Colombia)
+function parseHikvisionDate(dateStr) {
+  const s = String(dateStr || '').trim();
+  if (!s) return new Date();
+  const hasTZ = /([zZ]|[+-]\d\d:\d\d)$/.test(s);
+  return new Date(hasTZ ? s : `${s}-05:00`);
 }
 
-async function determineEventType(userId, eventTimestamp) {
-  try {
-    const db = getDb();
-
-    const eventDate = new Date(eventTimestamp);
-    const startOfDay = new Date(eventDate);
-    startOfDay.setHours(0, 0, 0, 0);
-
-    const endOfDay = new Date(eventDate);
-    endOfDay.setHours(23, 59, 59, 999);
-
-    const lastRecordSnapshot = await db
-      .collection('attendance')
-      .where('userId', '==', userId)
-      .where('timestamp', '>=', admin.firestore.Timestamp.fromDate(startOfDay))
-      .where('timestamp', '<=', admin.firestore.Timestamp.fromDate(endOfDay))
-      .orderBy('timestamp', 'desc')
-      .limit(1)
-      .get();
-
-    if (lastRecordSnapshot.empty) return 'check_in';
-
-    const lastRecord = lastRecordSnapshot.docs[0].data();
-    const lastEventType = lastRecord.eventType;
-
-    return lastEventType === 'check_in' ? 'check_out' : 'check_in';
-  } catch (error) {
-    console.error('❌ Error determinando tipo de evento:', error.message);
-    return 'check_in';
-  }
-}
-
-// ============================================
-// VERIFICAR ESTADO DEL DISPOSITIVO
-// ============================================
-
+// ============================
+// DEVICE STATUS
+// ============================
 async function checkDeviceStatus() {
   try {
     const response = await digestRequest('GET', `${baseURL}/System/deviceInfo`, { timeout: 5000 });
-    return {
-      success: true,
-      connected: true,
-      deviceInfo: response.data,
-      brandId: DEVICE_CONFIG.brandId,
-      location: DEVICE_CONFIG.location,
-    };
+    return { success: true, connected: true, deviceInfo: response.data, brandId: DEVICE_CONFIG.brandId, location: DEVICE_CONFIG.location };
   } catch (error) {
-    return { success: false, connected: false, error: `No se puede alcanzar: ${error.message}` };
+    return { success: false, connected: false, error: error.message };
   }
 }
 
-// ============================================
-// GESTIÓN DE USUARIOS EN EL DISPOSITIVO
-// ============================================
-
+// ============================
+// REGISTER / SYNC USERS (si lo usas)
+// ============================
 async function registerUserInDevice(cedula, fullName) {
   try {
     const userJSON = {
@@ -479,17 +363,102 @@ async function registerUserInDevice(cedula, fullName) {
 }
 
 async function syncUsersToDevice() {
-  throw new Error('syncUsersToDevice no incluido aquí para acortar. Usa tu versión actual (no afecta cooldown).');
+  const db = getDb();
+  const results = { success: [], errors: [], skipped: [] };
+
+  const syncCollection = async (collectionName) => {
+    const snapshot = await db.collection(collectionName).where('active', '==', true).get();
+
+    for (const doc of snapshot.docs) {
+      const user = doc.data();
+      if (!user.cedula || !user.fullName) {
+        results.skipped.push({ id: doc.id, collection: collectionName, name: user.fullName || 'Sin nombre', reason: 'Falta cédula o nombre' });
+        continue;
+      }
+
+      const auth = validateUserAuthorization(user);
+      if (!auth.isAuthorized) {
+        results.skipped.push({
+          id: doc.id,
+          collection: collectionName,
+          cedula: user.cedula,
+          name: user.fullName,
+          reason: !auth.hasLocationAccess ? 'Location no autorizada' : 'Brand no autorizada',
+        });
+        continue;
+      }
+
+      const r = await registerUserInDevice(user.cedula, user.fullName);
+      if (r.success) results.success.push({ id: doc.id, collection: collectionName, cedula: user.cedula, name: user.fullName });
+      else results.errors.push({ id: doc.id, collection: collectionName, cedula: user.cedula, name: user.fullName, error: r.error });
+    }
+  };
+
+  await syncCollection('barbers');
+  await syncCollection('workers');
+
+  return results;
 }
 
-// ============================================
-// EXPORTS
-// ============================================
+// ============================
+// GET RECORDS
+// ============================
+async function getAttendanceRecords(filters = {}) {
+  const db = getDb();
+  let query = db.collection('attendance').orderBy('timestamp', 'desc');
+
+  if (filters.cedula) query = query.where('cedula', '==', filters.cedula);
+  if (filters.collection) query = query.where('userCollection', '==', filters.collection);
+  if (filters.eventType) query = query.where('eventType', '==', filters.eventType);
+  if (filters.brandId) query = query.where('brandId', '==', filters.brandId);
+  if (filters.location) query = query.where('location', '==', filters.location);
+  if (filters.startDate) query = query.where('timestamp', '>=', new Date(filters.startDate));
+  if (filters.endDate) query = query.where('timestamp', '<=', new Date(filters.endDate));
+
+  const snapshot = await query.limit(parseInt(filters.limit || '100', 10)).get();
+
+  const records = [];
+  snapshot.forEach((doc) => {
+    const data = doc.data();
+    records.push({
+      id: doc.id,
+      ...data,
+      timestamp: data.timestamp?.toDate ? data.timestamp.toDate() : null,
+    });
+  });
+
+  return { success: true, count: records.length, records };
+}
+
+async function getTodayAttendanceForUser(userId) {
+  const db = getDb();
+  const now = new Date();
+  const startOfDay = new Date(now); startOfDay.setHours(0, 0, 0, 0);
+  const endOfDay = new Date(now); endOfDay.setHours(23, 59, 59, 999);
+
+  const snapshot = await db
+    .collection('attendance')
+    .where('userId', '==', userId)
+    .where('timestamp', '>=', admin.firestore.Timestamp.fromDate(startOfDay))
+    .where('timestamp', '<=', admin.firestore.Timestamp.fromDate(endOfDay))
+    .orderBy('timestamp', 'asc')
+    .get();
+
+  const records = [];
+  snapshot.forEach(doc => {
+    const data = doc.data();
+    records.push({ id: doc.id, ...data, timestamp: data.timestamp?.toDate ? data.timestamp.toDate() : null });
+  });
+
+  return records;
+}
 
 module.exports = {
-  connectToAlertStream,
   checkDeviceStatus,
   registerUserInDevice,
   syncUsersToDevice,
+  getAttendanceRecords,
   processAttendanceEvent,
+  getTodayAttendanceForUser,
+  setStreamWarmup,
 };
