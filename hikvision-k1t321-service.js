@@ -473,6 +473,253 @@ async function getTodayAttendanceForUser(userId) {
   return records;
 }
 
+async function autoConvertPendingCheckIns() {
+  try {
+    const db = getDb();
+    
+    // Obtener ayer en timezone Colombia
+    const nowColombia = DateTime.now().setZone('America/Bogota');
+    const yesterday = nowColombia.minus({ days: 1 });
+    
+    const startOfYesterday = yesterday.startOf('day').toJSDate();
+    const endOfYesterday = yesterday.endOf('day').toJSDate();
+    
+    console.log('\n' + '='.repeat(60));
+    console.log('🕛 AUTO-CONVERSIÓN INTELIGENTE DE CHECK-INS');
+    console.log('='.repeat(60));
+    console.log(`📅 Revisando día: ${yesterday.toFormat('yyyy-MM-dd')}`);
+    console.log(`🕐 Rango: ${startOfYesterday.toISOString()} - ${endOfYesterday.toISOString()}`);
+    
+    // Obtener TODOS los registros de ayer
+    const yesterdayRecords = await db
+      .collection('attendance')
+      .where('timestamp', '>=', admin.firestore.Timestamp.fromDate(startOfYesterday))
+      .where('timestamp', '<=', admin.firestore.Timestamp.fromDate(endOfYesterday))
+      .orderBy('timestamp', 'asc')
+      .get();
+    
+    console.log(`📊 Total registros de ayer: ${yesterdayRecords.size}`);
+    
+    // Agrupar por usuario
+    const userRecords = {};
+    
+    yesterdayRecords.forEach(doc => {
+      const data = doc.data();
+      const userId = data.userId;
+      
+      if (!userRecords[userId]) {
+        userRecords[userId] = [];
+      }
+      
+      userRecords[userId].push({
+        docId: doc.id,
+        ...data,
+        timestamp: data.timestamp?.toDate(),
+      });
+    });
+    
+    console.log(`👥 Usuarios con actividad ayer: ${Object.keys(userRecords).length}`);
+    
+    // Analizar cada usuario
+    const recordsToConvert = [];
+    const skippedSingleEvent = [];
+    
+    for (const [userId, records] of Object.entries(userRecords)) {
+      // Ordenar por timestamp
+      records.sort((a, b) => a.timestamp - b.timestamp);
+      
+      const totalEvents = records.length;
+      const lastRecord = records[records.length - 1];
+      
+      console.log(`\n👤 Usuario: ${lastRecord.fullName} (${lastRecord.cedula})`);
+      console.log(`   Total eventos: ${totalEvents}`);
+      console.log(`   Último evento: ${lastRecord.eventType} a las ${lastRecord.timestamp.toLocaleTimeString('es-CO')}`);
+      
+      // ⭐ LÓGICA INTELIGENTE
+      if (totalEvents === 1 && lastRecord.eventType === 'check_in') {
+        // Usuario con UN SOLO check_in → NO modificar
+        console.log(`   ℹ️  Solo tiene 1 evento (check_in) → NO modificar`);
+        skippedSingleEvent.push({
+          userId,
+          userName: lastRecord.fullName,
+          cedula: lastRecord.cedula,
+          timestamp: lastRecord.timestamp,
+        });
+      } else if (totalEvents > 1 && lastRecord.eventType === 'check_in') {
+        // Usuario con MÚLTIPLES eventos Y último es check_in → Modificar
+        console.log(`   ✅ Tiene ${totalEvents} eventos y terminó con check_in → Modificar a check_out`);
+        recordsToConvert.push({
+          docId: lastRecord.docId,
+          userId,
+          userName: lastRecord.fullName,
+          cedula: lastRecord.cedula,
+          timestamp: lastRecord.timestamp,
+          totalEvents,
+        });
+      } else {
+        // Último evento es check_out → OK
+        console.log(`   ✅ Terminó correctamente con check_out → OK`);
+      }
+    }
+    
+    console.log('\n' + '─'.repeat(60));
+    console.log(`⚠️  Registros a convertir: ${recordsToConvert.length}`);
+    console.log(`ℹ️  Omitidos (1 solo evento): ${skippedSingleEvent.length}`);
+    console.log('─'.repeat(60));
+    
+    if (recordsToConvert.length === 0) {
+      console.log('\n✅ No hay check-ins pendientes de conversión');
+      
+      if (skippedSingleEvent.length > 0) {
+        console.log('\nℹ️  Usuarios con 1 solo evento (no modificados):');
+        skippedSingleEvent.forEach(user => {
+          console.log(`   • ${user.userName} (${user.cedula}) - ${user.timestamp.toLocaleTimeString('es-CO')}`);
+        });
+      }
+      
+      console.log('\n' + '='.repeat(60) + '\n');
+      return { 
+        success: true, 
+        converted: 0, 
+        skipped: skippedSingleEvent.length,
+        users: [] 
+      };
+    }
+    
+    // ⭐ MODIFICAR los registros seleccionados
+    const results = [];
+    const batch = db.batch();
+    
+    console.log('\n🔄 Convirtiendo registros...');
+    
+    for (const record of recordsToConvert) {
+      try {
+        console.log(`\n   → ${record.userName} (${record.cedula})`);
+        console.log(`     Total eventos del día: ${record.totalEvents}`);
+        console.log(`     Timestamp: ${record.timestamp.toLocaleString('es-CO')}`);
+        console.log(`     Doc ID: ${record.docId}`);
+        
+        const docRef = db.collection('attendance').doc(record.docId);
+        
+        // ⭐ MODIFICAR el documento
+        batch.update(docRef, {
+          eventType: 'check_out', // ⭐ Cambiar de check_in a check_out
+          autoConverted: true,
+          autoConvertedAt: admin.firestore.FieldValue.serverTimestamp(),
+          originalEventType: 'check_in',
+          conversionNote: 'Convertido automáticamente - Usuario registró múltiples eventos pero no marcó salida final',
+          totalDayEvents: record.totalEvents, // Cuántos eventos tuvo ese día
+        });
+        
+        console.log(`     ✅ Marcado para conversión`);
+        
+        results.push({
+          docId: record.docId,
+          userId: record.userId,
+          userName: record.userName,
+          cedula: record.cedula,
+          totalEvents: record.totalEvents,
+          success: true,
+        });
+        
+      } catch (error) {
+        console.error(`     ❌ Error:`, error.message);
+        
+        results.push({
+          docId: record.docId,
+          userId: record.userId,
+          userName: record.userName,
+          cedula: record.cedula,
+          success: false,
+          error: error.message,
+        });
+      }
+    }
+    
+    // ⭐ EJECUTAR BATCH UPDATE
+    console.log(`\n💾 Ejecutando batch update de ${recordsToConvert.length} documentos...`);
+    await batch.commit();
+    console.log(`✅ Batch completado exitosamente`);
+    
+    const successCount = results.filter(r => r.success).length;
+    const errorCount = results.filter(r => !r.success).length;
+    
+    console.log('\n' + '='.repeat(60));
+    console.log('📊 RESUMEN DE AUTO-CONVERSIÓN');
+    console.log('='.repeat(60));
+    console.log(`✅ Check-ins convertidos a check-out: ${successCount}`);
+    console.log(`❌ Errores: ${errorCount}`);
+    console.log(`ℹ️  Omitidos (1 solo evento): ${skippedSingleEvent.length}`);
+    
+    if (successCount > 0) {
+      console.log('\n👥 Usuarios convertidos:');
+      results.filter(r => r.success).forEach(r => {
+        console.log(`   • ${r.userName} (${r.cedula}) - ${r.totalEvents} eventos`);
+      });
+    }
+    
+    if (skippedSingleEvent.length > 0) {
+      console.log('\nℹ️  Usuarios con 1 solo evento (no modificados):');
+      skippedSingleEvent.forEach(user => {
+        console.log(`   • ${user.userName} (${user.cedula})`);
+      });
+    }
+    
+    console.log('='.repeat(60) + '\n');
+    
+    return {
+      success: true,
+      converted: successCount,
+      errors: errorCount,
+      skipped: skippedSingleEvent.length,
+      users: results,
+      skippedUsers: skippedSingleEvent,
+    };
+    
+  } catch (error) {
+    console.error('❌ Error en auto-conversión:', error);
+    return {
+      success: false,
+      error: error.message,
+    };
+  }
+}
+
+/**
+ * Programa la auto-conversión para ejecutarse a medianoche (00:00:30)
+ */
+function scheduleAutoConvert() {
+  const { DateTime } = require('luxon');
+  
+  function scheduleNext() {
+    const nowColombia = DateTime.now().setZone('America/Bogota');
+    
+    // Próxima medianoche + 30 segundos
+    let nextRun = nowColombia.plus({ days: 1 }).startOf('day').plus({ seconds: 30 });
+    
+    // Si estamos muy cerca de medianoche, ejecutar en la próxima
+    if (nextRun.diff(nowColombia, 'seconds').seconds < 60) {
+      nextRun = nextRun.plus({ days: 1 });
+    }
+    
+    const msUntilRun = nextRun.diff(nowColombia).milliseconds;
+    
+    console.log('\n⏰ Auto-conversión inteligente programada para:', nextRun.toFormat('yyyy-MM-dd HH:mm:ss COT'));
+    console.log(`   (en ${(msUntilRun / 1000 / 60 / 60).toFixed(1)} horas)`);
+    console.log('   Lógica: Solo convierte si hay >1 evento y último es check_in\n');
+    
+    setTimeout(async () => {
+      console.log('\n🕛 Ejecutando auto-conversión programada...');
+      await autoConvertPendingCheckIns();
+      
+      // Programar la próxima ejecución
+      scheduleNext();
+    }, msUntilRun);
+  }
+  
+  scheduleNext();
+}
+
 module.exports = {
   checkDeviceStatus,
   registerUserInDevice,
@@ -481,4 +728,6 @@ module.exports = {
   processAttendanceEvent,
   getTodayAttendanceForUser,
   setStreamWarmup,
+  autoConvertPendingCheckIns,  // ⭐ NUEVO
+  scheduleAutoConvert,          // ⭐ NUEVO
 };
