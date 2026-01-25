@@ -6,6 +6,7 @@ const xml2js = require('xml2js');
 const fs = require('fs');
 const path = require('path');
 const admin = require('firebase-admin');
+const { DateTime } = require('luxon');
 
 // Carpeta evidencias
 const EVIDENCE_DIR = path.join(__dirname, 'attendance-evidence');
@@ -17,10 +18,10 @@ const getDb = () => admin.firestore();
 // CONFIG
 // ============================
 const DEVICE_CONFIG = {
-  ip: process.env.HIKVISION_IP || '192.168.1.13',
+  ip: process.env.HIKVISION_IP || '192.168.1.25',
   port: parseInt(process.env.HIKVISION_PORT, 10) || 80,
   username: process.env.HIKVISION_USERNAME || 'admin',
-  password: process.env.HIKVISION_PASSWORD || '1047338633ABC',
+  password: process.env.HIKVISION_PASSWORD || 'Negro2025',
   brandId: process.env.HIKVISION_BRAND_ID || 'brand',
   location: process.env.HIKVISION_LOCATION || 'location',
 };
@@ -166,11 +167,17 @@ async function isWithinCooldown(userId, eventTimestamp) {
 async function determineEventType(userId, eventTimestamp) {
   const db = getDb();
 
-  const startOfDay = new Date(eventTimestamp);
-  startOfDay.setHours(0, 0, 0, 0);
+  // ⭐ Convertir el timestamp a timezone Colombia
+  const eventInColombia = DateTime.fromJSDate(eventTimestamp).setZone('America/Bogota');
+  
+  // ⭐ Obtener inicio y fin del DÍA en Colombia
+  const startOfDay = eventInColombia.startOf('day').toJSDate();
+  const endOfDay = eventInColombia.endOf('day').toJSDate();
 
-  const endOfDay = new Date(eventTimestamp);
-  endOfDay.setHours(23, 59, 59, 999);
+  console.log(`   🔍 Determinando tipo de evento`);
+  console.log(`   📅 Fecha: ${eventInColombia.toFormat('yyyy-MM-dd')}`);
+  console.log(`   🕐 Hora: ${eventInColombia.toFormat('HH:mm:ss')} COT`);
+  console.log(`   📅 Buscando del día: ${startOfDay.toISOString()} a ${endOfDay.toISOString()}`);
 
   const lastRecordSnapshot = await db
     .collection('attendance')
@@ -181,10 +188,23 @@ async function determineEventType(userId, eventTimestamp) {
     .limit(1)
     .get();
 
-  if (lastRecordSnapshot.empty) return 'check_in';
+  if (lastRecordSnapshot.empty) {
+    console.log('   ➡️  Primer registro del día (Colombia) → CHECK-IN');
+    return 'check_in';
+  }
 
   const lastRecord = lastRecordSnapshot.docs[0].data();
-  return lastRecord.eventType === 'check_in' ? 'check_out' : 'check_in';
+  const lastEventType = lastRecord.eventType;
+
+  console.log(`   📝 Último evento del día: ${lastEventType}`);
+
+  if (lastEventType === 'check_in') {
+    console.log('   ⬅️  Último fue entrada → CHECK-OUT');
+    return 'check_out';
+  } else {
+    console.log('   ➡️  Último fue salida → CHECK-IN');
+    return 'check_in';
+  }
 }
 
 // ============================
