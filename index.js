@@ -77,8 +77,8 @@ app.get('/api/hikvision/devices', (req, res) => {
   });
 });
 
-// Status de un dispositivo específico
-app.get('/api/hikvision/status/:deviceId?', async (req, res) => {
+// Status de un dispositivo específico (deviceId opcional)
+async function handleDeviceStatus(req, res) {
   try {
     const { deviceId } = req.params;
     const status = await checkDeviceStatus(deviceId);
@@ -86,7 +86,9 @@ app.get('/api/hikvision/status/:deviceId?', async (req, res) => {
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }
-});
+}
+app.get('/api/hikvision/status', handleDeviceStatus);
+app.get('/api/hikvision/status/:deviceId', handleDeviceStatus);
 
 // Status de todos los dispositivos
 app.get('/api/hikvision/status-all', async (req, res) => {
@@ -98,8 +100,8 @@ app.get('/api/hikvision/status-all', async (req, res) => {
   }
 });
 
-// Sincronizar usuarios a un dispositivo específico
-app.post('/api/hikvision/sync-users/:deviceId?', express.json({ limit: '2mb' }), async (req, res) => {
+// Sincronizar usuarios a un dispositivo específico (deviceId opcional)
+async function handleSyncUsers(req, res) {
   try {
     const { deviceId } = req.params;
     console.log(`🔄 Endpoint sync-users llamado para dispositivo: ${deviceId || 'device_1'}`);
@@ -109,7 +111,9 @@ app.post('/api/hikvision/sync-users/:deviceId?', express.json({ limit: '2mb' }),
     console.error('❌ Error en endpoint sync-users:', error);
     res.status(500).json({ success: false, error: error.message, stack: error.stack });
   }
-});
+}
+app.post('/api/hikvision/sync-users', express.json({ limit: '2mb' }), handleSyncUsers);
+app.post('/api/hikvision/sync-users/:deviceId', express.json({ limit: '2mb' }), handleSyncUsers);
 
 // Registrar un usuario en un dispositivo específico
 app.post('/api/hikvision/register-user', express.json({ limit: '2mb' }), async (req, res) => {
