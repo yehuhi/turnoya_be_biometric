@@ -1,23 +1,26 @@
-// index.js
+// index.js - VERSIÓN MULTI-DISPOSITIVO
 const express = require('express');
 const http = require('http');
 const socketIo = require('socket.io');
 const cors = require('cors');
 const admin = require('firebase-admin');
 const xml2js = require('xml2js');
-const { scheduleAutoConvert } = require('./hikvision-k1t321-service');
-
 require('dotenv').config();
 
-// ⭐ IMPORTAR SERVICIO HIKVISION
+// Importar servicio Hikvision
 const {
+  DEVICES,
+  getDeviceConfig,
   checkDeviceStatus,
+  checkAllDevicesStatus,
   registerUserInDevice,
   syncUsersToDevice,
   getAttendanceRecords,
   processAttendanceEvent,
-  getTodayAttendanceForUser, // ✅ antes no lo estabas importando
-  setStreamWarmup, // ✅ evita isStreamWarmedUp undefined
+  getTodayAttendanceForUser,
+  setStreamWarmup,
+  scheduleAutoConvert,
+  autoConvertPendingCheckIns,
 } = require('./hikvision-k1t321-service');
 
 const app = express();
@@ -31,14 +34,13 @@ const io = socketIo(server, {
 
 app.use(cors());
 
-// ✅ Firebase Admin (ENV primero, fallback local opcional)
+// Firebase Admin
 if (!admin.apps.length) {
   if (process.env.FIREBASE_SERVICE_ACCOUNT_JSON) {
     const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_JSON);
     admin.initializeApp({ credential: admin.credential.cert(serviceAccount) });
     console.log('✅ Firebase Admin inicializado desde ENV');
   } else {
-    // Solo local
     const serviceAccount = require('./firebase-config.json');
     admin.initializeApp({ credential: admin.credential.cert(serviceAccount) });
     console.log('✅ Firebase Admin inicializado desde firebase-config.json (LOCAL)');
@@ -48,35 +50,60 @@ if (!admin.apps.length) {
 const db = admin.firestore();
 app.locals.db = db;
 
-// ✅ Body parsers globales (para tu app normal)
-// (OJO: NO pongas express.text({type:'*/*'}) global, eso fue lo que te causó 413)
-app.use(express.json({ limit: '2mb' })); // para APIs normales
+app.use(express.json({ limit: '2mb' }));
 
-// Timestamp inicio servidor
 const SERVER_START_TIME = new Date();
 
 // ============================================
 // HIKVISION ENDPOINTS
 // ============================================
 
-// Healthcheck simple
 app.get('/health', (req, res) => res.status(200).send('OK'));
 
-// Verificar estado del dispositivo (si usas ISAPI hacia adentro)
-app.get('/api/hikvision/status', async (req, res) => {
+// Ver todos los dispositivos configurados
+app.get('/api/hikvision/devices', (req, res) => {
+  const deviceList = DEVICES.map(d => ({
+    id: d.id,
+    name: d.name,
+    ip: d.ip,
+    location: d.location,
+    brandId: d.brandId,
+  }));
+  
+  res.json({
+    success: true,
+    count: deviceList.length,
+    devices: deviceList,
+  });
+});
+
+// Status de un dispositivo específico
+app.get('/api/hikvision/status/:deviceId?', async (req, res) => {
   try {
-    const status = await checkDeviceStatus();
+    const { deviceId } = req.params;
+    const status = await checkDeviceStatus(deviceId);
     res.json(status);
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }
 });
 
-// Sincronizar todos los usuarios al dispositivo (si lo usas)
-app.post('/api/hikvision/sync-users', express.json({ limit: '2mb' }), async (req, res) => {
+// Status de todos los dispositivos
+app.get('/api/hikvision/status-all', async (req, res) => {
   try {
-    console.log('🔄 Endpoint sync-users llamado');
-    const results = await syncUsersToDevice();
+    const status = await checkAllDevicesStatus();
+    res.json(status);
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Sincronizar usuarios a un dispositivo específico
+app.post('/api/hikvision/sync-users/:deviceId?', express.json({ limit: '2mb' }), async (req, res) => {
+  try {
+    const { deviceId } = req.params;
+    console.log(`🔄 Endpoint sync-users llamado para dispositivo: ${deviceId || 'device_1'}`);
+    const results = await syncUsersToDevice(deviceId || 'device_1');
     res.json({ success: true, message: 'Sincronización completada', results });
   } catch (error) {
     console.error('❌ Error en endpoint sync-users:', error);
@@ -84,33 +111,49 @@ app.post('/api/hikvision/sync-users', express.json({ limit: '2mb' }), async (req
   }
 });
 
-// Registrar un usuario en el dispositivo (si lo usas)
+// Registrar un usuario en un dispositivo específico
 app.post('/api/hikvision/register-user', express.json({ limit: '2mb' }), async (req, res) => {
   try {
-    const { cedula, fullName } = req.body;
+    const { cedula, fullName, deviceId } = req.body;
     if (!cedula || !fullName) {
       return res.status(400).json({ success: false, error: 'Cédula y nombre completo son requeridos' });
     }
-    const result = await registerUserInDevice(cedula, fullName);
+    
+    const deviceConfig = deviceId 
+      ? DEVICES.find(d => d.id === deviceId) || DEVICES[0]
+      : DEVICES[0];
+      
+    const result = await registerUserInDevice(cedula, fullName, deviceConfig);
     res.json(result);
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }
 });
 
-// GET para probar desde navegador
+// GET para probar
 app.get('/api/hikvision/webhook', (req, res) => res.status(200).send('OK'));
+app.get('/api/hikvision/webhook/:deviceId', (req, res) => res.status(200).send('OK'));
 
-// ✅ WEBHOOK (RAW) — aquí subimos límite y aceptamos CUALQUIER Content-Type
-app.post('/api/hikvision/webhook',
-  express.raw({ type: () => true, limit: '25mb' }),
-  async (req, res) => {
+// WEBHOOK (RAW) - Identifica el dispositivo por :deviceId en la URL
+// (confiable, independiente de NAT/IP pública) con fallback a detección
+// por IP solo para el webhook legacy sin deviceId en la ruta.
+async function handleHikvisionWebhook(req, res) {
     res.status(200).send('OK');
 
     try {
       const webhookReceivedTime = new Date();
+
+      const routeDeviceId = req.params.deviceId || null;
+
+      // Detectar IP del dispositivo (solo se usa como fallback legacy)
+      const deviceIP = (req.headers['x-forwarded-for'] ||
+                       req.connection.remoteAddress ||
+                       req.socket.remoteAddress ||
+                       req.ip || '').replace('::ffff:', '');
+
       console.log('\n' + '█'.repeat(60));
-      console.log(`📩 WEBHOOK RECIBIDO: ${webhookReceivedTime.toLocaleString('es-CO')}`);
+      console.log(`📩 WEBHOOK RECIBIDO: ${webhookReceivedTime.toLocaleString('es-CO', { timeZone: 'America/Bogota' })}`);
+      console.log(`📍 IP Origen: ${deviceIP}${routeDeviceId ? ` | 🏷️ deviceId (ruta): ${routeDeviceId}` : ''}`);
       console.log('█'.repeat(60));
 
       const bodyBuf = Buffer.isBuffer(req.body) ? req.body : Buffer.from(req.body || '');
@@ -123,21 +166,19 @@ app.post('/api/hikvision/webhook',
 
       const looksXml = bodyStr.includes('<?xml') || bodyStr.includes('<EventNotificationAlert');
 
-      // ⭐ MULTIPART/JSON MEJORADO
+      // MULTIPART/JSON
       if (looksMultipartJson) {
         console.log('📦 Formato multipart/JSON detectado');
 
         let eventData;
         
         try {
-          // Buscar el primer { y último } válido
           const startIdx = bodyStr.indexOf('{');
           if (startIdx === -1) {
             console.log('⚠️ No se encontró JSON');
             return;
           }
           
-          // Intentar parsear desde diferentes puntos finales
           let parsed = false;
           let endIdx = bodyStr.lastIndexOf('}');
           
@@ -176,11 +217,14 @@ app.post('/api/hikvision/webhook',
           (accessEvent.serialNo ? String(accessEvent.serialNo) : null) ||
           (eventData.serialNo ? String(eventData.serialNo) : null);
 
+        // Identificador confiable del dispositivo (viene de la ruta del webhook)
         const normalizedEvent = {
           cedula: employeeId,
           method: accessEvent.currentVerifyMode || accessEvent.attendanceStatus || 'fingerPrint',
           timestamp: eventData.dateTime,
           dateTime: eventData.dateTime,
+          deviceId: routeDeviceId, // ⭐ id del dispositivo (confiable, desde la URL)
+          deviceIP: deviceIP, // IP de origen (solo fallback legacy)
           rawJSON: eventData,
         };
 
@@ -194,20 +238,56 @@ app.post('/api/hikvision/webhook',
         return;
       }
 
-      // XML processing...
+      // XML
       if (looksXml) {
-        // ... tu código XML existente
+        console.log('📦 Formato XML detectado');
+        
+        const parser = new xml2js.Parser({ explicitArray: false });
+        const result = await parser.parseStringPromise(bodyStr);
+        const event = result.EventNotificationAlert;
+
+        if (!event) {
+          console.log('⚠️ XML sin EventNotificationAlert');
+          return;
+        }
+
+        const eventTime = parseHikvisionDate(event.dateTime);
+        const diffSec = (eventTime.getTime() - SERVER_START_TIME.getTime()) / 1000;
+
+        if (diffSec < -60) {
+          console.log('🗂️ HISTÓRICO XML - Ignorando');
+          return;
+        }
+
+        const normalizedEvent = {
+          cedula: event.employeeNoString || event.employeeNo || event.cardNo,
+          method: event.attendanceStatus || event.currentVerifyMode || 'fingerPrint',
+          timestamp: event.dateTime,
+          dateTime: event.dateTime,
+          deviceId: routeDeviceId, // ⭐ id del dispositivo (confiable, desde la URL)
+          deviceIP: deviceIP, // IP de origen (solo fallback legacy)
+          rawEvent: event,
+        };
+
+        if (!normalizedEvent.cedula) {
+          console.log('⚠️ XML sin cédula/cardNo - ignorado');
+          return;
+        }
+
+        await processAttendanceEvent(normalizedEvent, io);
+        console.log('✅ Evento XML procesado\n');
+        return;
       }
 
       console.log('⚠️ Formato desconocido');
     } catch (err) {
       console.error('❌ ERROR:', err);
     }
-  }
-);
+}
 
-// Helper: Hikvision a veces manda dateTime sin timezone.
-// Si no trae Z o +/-, asumimos Colombia (-05:00)
+app.post('/api/hikvision/webhook', express.raw({ type: () => true, limit: '25mb' }), handleHikvisionWebhook);
+app.post('/api/hikvision/webhook/:deviceId', express.raw({ type: () => true, limit: '25mb' }), handleHikvisionWebhook);
+
 function parseHikvisionDate(dateStr) {
   if (!dateStr) return new Date();
   const s = String(dateStr).trim();
@@ -219,7 +299,6 @@ function parseHikvisionDate(dateStr) {
 // ATTENDANCE ENDPOINTS
 // ============================================
 
-// Ver registros del día de un usuario
 app.get('/api/attendance/today/:userId', async (req, res) => {
   try {
     const { userId } = req.params;
@@ -236,12 +315,13 @@ app.get('/api/attendance/today/:userId', async (req, res) => {
   }
 });
 
-// Resumen de asistencia del día
 app.get('/api/attendance/summary/today', async (req, res) => {
   try {
     const now = new Date();
-    const startOfDay = new Date(now); startOfDay.setHours(0, 0, 0, 0);
-    const endOfDay = new Date(now); endOfDay.setHours(23, 59, 59, 999);
+    const startOfDay = new Date(now); 
+    startOfDay.setHours(0, 0, 0, 0);
+    const endOfDay = new Date(now); 
+    endOfDay.setHours(23, 59, 59, 999);
 
     const snapshot = await db
       .collection('attendance')
@@ -286,7 +366,6 @@ app.get('/api/attendance/summary/today', async (req, res) => {
   }
 });
 
-// Obtener registros de asistencia (con filtros)
 app.get('/api/attendance/records', async (req, res) => {
   try {
     const filters = {
@@ -295,11 +374,23 @@ app.get('/api/attendance/records', async (req, res) => {
       eventType: req.query.eventType,
       brandId: req.query.brandId,
       location: req.query.location,
+      deviceId: req.query.deviceId,
       startDate: req.query.startDate,
       endDate: req.query.endDate,
       limit: req.query.limit,
     };
     const result = await getAttendanceRecords(filters);
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Endpoint manual para auto-conversión
+app.post('/api/attendance/convert-pending', async (req, res) => {
+  try {
+    console.log('🔄 Conversión manual solicitada');
+    const result = await autoConvertPendingCheckIns();
     res.json(result);
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
@@ -317,7 +408,7 @@ io.on('connection', (socket) => {
     socket.join(userId);
 
     if (userType === 'admin') {
-      const deviceStatus = await checkDeviceStatus();
+      const deviceStatus = await checkAllDevicesStatus();
       socket.emit('hikvision:status', deviceStatus);
     }
   });
@@ -336,13 +427,20 @@ io.on('connection', (socket) => {
 const PORT = process.env.PORT || 5000;
 
 server.listen(PORT, async () => {
-  console.log('='.repeat(50));
+  console.log('='.repeat(60));
   console.log(`🚀 Servidor corriendo en puerto ${PORT}`);
-  console.log('='.repeat(50));
-  console.log('✅ Listo para recibir eventos Hikvision en: /api/hikvision/webhook');
-  console.log('✅ Healthcheck: /health');
-  console.log('='.repeat(50));
-  scheduleAutoConvert(); 
-  // ✅ Si algún día vuelves a usar stream, define warmup desde aquí:
+  console.log('='.repeat(60));
+  console.log('✅ Listo para recibir eventos Hikvision');
+  console.log(`📍 Dispositivos configurados: ${DEVICES.length}`);
+  DEVICES.forEach(d => {
+    console.log(`   • ${d.name} (${d.ip}) - Location: ${d.location}`);
+  });
+  console.log('='.repeat(60));
+  
   setStreamWarmup(true);
+  
+  // Iniciar auto-conversión inteligente
+  scheduleAutoConvert();
+  console.log('⏰ Auto-conversión inteligente activada (medianoche)');
+  console.log('='.repeat(60));
 });

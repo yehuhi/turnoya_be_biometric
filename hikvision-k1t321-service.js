@@ -1,7 +1,6 @@
-// hikvision-k1t321-service.js
+// hikvision-k1t321-service.js - VERSIÓN MULTI-DISPOSITIVO CORREGIDA
 const axios = require('axios');
 const crypto = require('crypto');
-const Dicer = require('dicer');
 const xml2js = require('xml2js');
 const fs = require('fs');
 const path = require('path');
@@ -15,32 +14,69 @@ if (!fs.existsSync(EVIDENCE_DIR)) fs.mkdirSync(EVIDENCE_DIR, { recursive: true }
 const getDb = () => admin.firestore();
 
 // ============================
-// CONFIG
+// CONFIGURACIÓN MULTI-DISPOSITIVO
 // ============================
-const DEVICE_CONFIG = {
-  ip: process.env.HIKVISION_IP || '192.168.1.25',
-  port: parseInt(process.env.HIKVISION_PORT, 10) || 80,
-  username: process.env.HIKVISION_USERNAME || 'admin',
-  password: process.env.HIKVISION_PASSWORD || 'Negro2025',
-  brandId: process.env.HIKVISION_BRAND_ID || 'brand',
-  location: process.env.HIKVISION_LOCATION || 'location',
-};
-
-const baseURL = `http://${DEVICE_CONFIG.ip}:${DEVICE_CONFIG.port}/ISAPI`;
+const DEVICES = [
+  {
+    id: 'NEGRO_MALLPLAZA',
+    ip: '192.168.1.25',
+    port: 80,
+    username: 'admin',
+    password: 'Negro2025',
+    brandId: '8iaQueOcfYoss5zXJ3IC',
+    location: 'oRHOHl3HLppb02u4pyVK',
+    name: 'CC MALL PLAZA BARRANQUILLA',
+  },
+  {
+    id: 'NEGRO_VIVA',
+    ip: '192.168.1.18',
+    port: 80,
+    username: 'admin',
+    password: 'NEGROVIVA!',
+    brandId: '8iaQueOcfYoss5zXJ3IC',
+    location: 'sfO6ev2fFyVDMHykB2MW',
+    name: 'CC VIVA BARRANQUILLA',
+  },
+  // Agregar más dispositivos aquí según necesites:
+];
 
 // Anti doble huella (30s por defecto)
 const COOLDOWN_SECONDS = parseInt(process.env.ATTENDANCE_COOLDOWN_SECONDS || '30', 10);
 
-// Warmup control (para stream; no rompe si no lo usas)
+// Warmup control
 let isStreamWarmedUp = true;
 function setStreamWarmup(value) {
   isStreamWarmedUp = !!value;
 }
 
 // ============================
-// DIGEST AUTH SIMPLE
+// FUNCIÓN PARA OBTENER CONFIG POR ID O IP
 // ============================
-async function digestRequest(method, url, options = {}) {
+// Se prioriza el match por `id` (confiable, viene de la URL del webhook)
+// sobre el match por IP (no confiable detrás de NAT/cloud, se mantiene
+// solo por compatibilidad con el webhook legacy sin deviceId en la ruta).
+function getDeviceConfig(identifier) {
+  const device = DEVICES.find(d => d.id === identifier) || DEVICES.find(d => d.ip === identifier);
+  if (!device) {
+    console.warn(`⚠️ Dispositivo ${identifier} no configurado - usando primer dispositivo por defecto`);
+    return DEVICES[0] || {
+      id: 'unknown',
+      ip: identifier,
+      port: 80,
+      username: 'admin',
+      password: '12345',
+      brandId: 'unknown',
+      location: 'unknown',
+      name: 'Dispositivo Desconocido',
+    };
+  }
+  return device;
+}
+
+// ============================
+// DIGEST AUTH POR DISPOSITIVO
+// ============================
+async function digestRequestForDevice(method, url, deviceConfig, options = {}) {
   const firstResponse = await axios({
     method,
     url,
@@ -51,17 +87,30 @@ async function digestRequest(method, url, options = {}) {
   if (firstResponse.status !== 401) return firstResponse;
 
   const authHeader = firstResponse.headers['www-authenticate'];
-  if (!authHeader || !authHeader.includes('Digest')) throw new Error('Digest auth no disponible');
+  if (!authHeader || !authHeader.includes('Digest')) {
+    throw new Error('Digest auth no disponible');
+  }
 
   const realm = /realm="([^"]+)"/.exec(authHeader)?.[1] || '';
   const nonce = /nonce="([^"]+)"/.exec(authHeader)?.[1] || '';
   const qop = /qop="([^"]+)"/.exec(authHeader)?.[1] || 'auth';
 
-  const ha1 = crypto.createHash('md5').update(`${DEVICE_CONFIG.username}:${realm}:${DEVICE_CONFIG.password}`).digest('hex');
-  const ha2 = crypto.createHash('md5').update(`${method.toUpperCase()}:${new URL(url).pathname}`).digest('hex');
+  const ha1 = crypto
+    .createHash('md5')
+    .update(`${deviceConfig.username}:${realm}:${deviceConfig.password}`)
+    .digest('hex');
+
+  const ha2 = crypto
+    .createHash('md5')
+    .update(`${method.toUpperCase()}:${new URL(url).pathname}`)
+    .digest('hex');
+
   const nc = '00000001';
   const cnonce = crypto.randomBytes(8).toString('hex');
-  const response = crypto.createHash('md5').update(`${ha1}:${nonce}:${nc}:${cnonce}:${qop}:${ha2}`).digest('hex');
+  const response = crypto
+    .createHash('md5')
+    .update(`${ha1}:${nonce}:${nc}:${cnonce}:${qop}:${ha2}`)
+    .digest('hex');
 
   return axios({
     method,
@@ -69,7 +118,7 @@ async function digestRequest(method, url, options = {}) {
     ...options,
     headers: {
       ...options.headers,
-      Authorization: `Digest username="${DEVICE_CONFIG.username}", realm="${realm}", nonce="${nonce}", uri="${new URL(url).pathname}", qop=${qop}, nc=${nc}, cnonce="${cnonce}", response="${response}"`,
+      Authorization: `Digest username="${deviceConfig.username}", realm="${realm}", nonce="${nonce}", uri="${new URL(url).pathname}", qop=${qop}, nc=${nc}, cnonce="${cnonce}", response="${response}"`,
     },
   });
 }
@@ -98,12 +147,12 @@ const findUserByCedula = async (cedula) => {
 // ============================
 // AUTH VALIDATION
 // ============================
-const validateUserAuthorization = (userData) => {
+const validateUserAuthorization = (userData, deviceConfig) => {
   const authorizedLocations = userData.authorizedLocations || [];
   const brandIds = userData.brandIds || [];
 
-  const hasLocationAccess = authorizedLocations.includes(DEVICE_CONFIG.location);
-  const hasBrandAccess = brandIds.includes(DEVICE_CONFIG.brandId);
+  const hasLocationAccess = authorizedLocations.includes(deviceConfig.location);
+  const hasBrandAccess = brandIds.includes(deviceConfig.brandId);
 
   return {
     isAuthorized: hasLocationAccess && hasBrandAccess,
@@ -134,7 +183,6 @@ const saveAttendanceRecord = async (data) => {
 async function isWithinCooldown(userId, eventTimestamp) {
   const db = getDb();
 
-  // Buscamos el último registro del usuario (sin necesidad del rango del día)
   const snap = await db
     .collection('attendance')
     .where('userId', '==', userId)
@@ -167,17 +215,13 @@ async function isWithinCooldown(userId, eventTimestamp) {
 async function determineEventType(userId, eventTimestamp) {
   const db = getDb();
 
-  // ⭐ Convertir el timestamp a timezone Colombia
   const eventInColombia = DateTime.fromJSDate(eventTimestamp).setZone('America/Bogota');
-  
-  // ⭐ Obtener inicio y fin del DÍA en Colombia
   const startOfDay = eventInColombia.startOf('day').toJSDate();
   const endOfDay = eventInColombia.endOf('day').toJSDate();
 
   console.log(`   🔍 Determinando tipo de evento`);
   console.log(`   📅 Fecha: ${eventInColombia.toFormat('yyyy-MM-dd')}`);
   console.log(`   🕐 Hora: ${eventInColombia.toFormat('HH:mm:ss')} COT`);
-  console.log(`   📅 Buscando del día: ${startOfDay.toISOString()} a ${endOfDay.toISOString()}`);
 
   const lastRecordSnapshot = await db
     .collection('attendance')
@@ -212,24 +256,22 @@ async function determineEventType(userId, eventTimestamp) {
 // ============================
 async function processAttendanceEvent(eventData, io) {
   try {
-    // Normalización para que funcione con JSON y XML
-    const cedula =
-      eventData.cedula ||
-      eventData.employeeNoString ||
-      eventData.employeeNo ||
-      eventData.cardNo;
+    // Identificar dispositivo: se prioriza deviceId (viene de la ruta del
+    // webhook, ej. /api/hikvision/webhook/NEGRO_VIVA) sobre deviceIP (no
+    // confiable detrás de NAT cuando el server corre en la nube).
+    const deviceIdentifier = eventData.deviceId || eventData.deviceIP || DEVICES[0].id;
 
-    const method =
-      eventData.method ||
-      eventData.attendanceStatus ||
-      eventData.currentVerifyMode ||
-      'fingerPrint';
-
-    const tsStr =
-      eventData.timestamp ||
-      eventData.dateTime ||
-      new Date().toISOString();
-
+    // Obtener configuración del dispositivo
+    const deviceConfig = getDeviceConfig(deviceIdentifier);
+    
+    console.log(`\n📍 Dispositivo: ${deviceConfig.name} (${deviceConfig.ip})`);
+    console.log(`   Location: ${deviceConfig.location}`);
+    console.log(`   BrandId: ${deviceConfig.brandId}`);
+    
+    // Normalización
+    const cedula = eventData.cedula || eventData.employeeNoString || eventData.employeeNo || eventData.cardNo;
+    const method = eventData.method || eventData.attendanceStatus || eventData.currentVerifyMode || 'fingerPrint';
+    const tsStr = eventData.timestamp || eventData.dateTime || new Date().toISOString();
     const eventTimestamp = parseHikvisionDate(tsStr);
 
     if (!cedula) {
@@ -237,10 +279,9 @@ async function processAttendanceEvent(eventData, io) {
       return;
     }
 
-    // Validar cedula (evitar serialNo del dispositivo)
     const cedulaNumber = parseInt(cedula, 10);
     if (isNaN(cedulaNumber) || cedulaNumber < 1000) {
-      console.warn(`⚠️ Identificador inválido (${cedula}) - probablemente serialNo - IGNORADO`);
+      console.warn(`⚠️ Identificador inválido (${cedula}) - IGNORADO`);
       return;
     }
 
@@ -249,7 +290,7 @@ async function processAttendanceEvent(eventData, io) {
       return;
     }
 
-    console.log(`\n🔍 Buscando usuario con cédula: ${cedula}`);
+    console.log(`🔍 Buscando usuario con cédula: ${cedula}`);
     const user = await findUserByCedula(String(cedula));
 
     if (!user.found) {
@@ -259,36 +300,47 @@ async function processAttendanceEvent(eventData, io) {
           cedula,
           timestamp: eventTimestamp,
           method,
-          message: `Usuario con cédula ${cedula} intentó marcar pero no está en el sistema`,
+          deviceIP: deviceConfig.ip,
+          deviceName: deviceConfig.name,
+          message: `Usuario con cédula ${cedula} intentó marcar en ${deviceConfig.name}`,
         });
       }
       return;
     }
 
     // Validar autorización
-    const authorization = validateUserAuthorization(user.data);
+    const authorization = validateUserAuthorization(user.data, deviceConfig);
+    
+    console.log(`   authorizedLocations: ${JSON.stringify(user.data.authorizedLocations)}`);
+    console.log(`   brandIds: ${JSON.stringify(user.data.brandIds)}`);
+    console.log(`   Requiere location: ${deviceConfig.location}`);
+    console.log(`   Requiere brandId: ${deviceConfig.brandId}`);
+    console.log(`   hasLocationAccess: ${authorization.hasLocationAccess}`);
+    console.log(`   hasBrandAccess: ${authorization.hasBrandAccess}`);
+    
     if (!authorization.isAuthorized) {
       console.warn(`❌ ACCESO NO AUTORIZADO: ${user.data.fullName} (${cedula})`);
+      console.warn(`   Usuario no tiene acceso a ${deviceConfig.name}`);
       if (io) {
         io.emit('attendance:unauthorized_access', {
           cedula,
           fullName: user.data.fullName,
           timestamp: eventTimestamp,
-          location: DEVICE_CONFIG.location,
-          brandId: DEVICE_CONFIG.brandId,
+          location: deviceConfig.location,
+          brandId: deviceConfig.brandId,
+          deviceName: deviceConfig.name,
           reason: !authorization.hasLocationAccess ? 'location_not_authorized' : 'brand_not_authorized',
         });
       }
       return;
     }
 
-    // ✅ Anti doble huella (30s)
+    console.log(`✅ ACCESO AUTORIZADO para ${deviceConfig.name}`);
+
+    // Cooldown
     const cooldown = await isWithinCooldown(user.id, eventTimestamp);
     if (cooldown.blocked) {
-      console.warn(
-        `⏱️ COOLDOWN (${COOLDOWN_SECONDS}s): Ignorando marca duplicada. ` +
-        `Última hace ${cooldown.diffSec.toFixed(1)}s (last=${cooldown.lastEventType})`
-      );
+      console.warn(`⏱️ COOLDOWN: Ignorando marca duplicada`);
       return;
     }
 
@@ -304,22 +356,22 @@ async function processAttendanceEvent(eventData, io) {
       role: user.data.role || '',
       userType: user.data.userType || '',
       userTypeName: user.data.userTypeName || user.data.role || '',
-
       branch: user.data.branch || user.data.companies || '',
       branchName: user.data.branchName || '',
-
-      brandId: DEVICE_CONFIG.brandId,
-      location: DEVICE_CONFIG.location,
-
+      
+      // Configuración del dispositivo
+      brandId: deviceConfig.brandId,
+      location: deviceConfig.location,
+      deviceId: deviceConfig.ip,
+      deviceName: deviceConfig.name,
+      
       timestamp: admin.firestore.Timestamp.fromDate(eventTimestamp),
       eventType: determinedEventType,
       verificationMethod: method || 'fingerPrint',
-
-      deviceId: DEVICE_CONFIG.ip,
       status: 'success',
     };
 
-    console.log(`💾 Guardando asistencia: ${attendanceData.fullName} (${attendanceData.eventType})`);
+    console.log(`💾 Guardando asistencia: ${attendanceData.fullName} (${attendanceData.eventType}) en ${deviceConfig.name}`);
     const recordId = await saveAttendanceRecord(attendanceData);
 
     if (io) {
@@ -336,7 +388,7 @@ async function processAttendanceEvent(eventData, io) {
   }
 }
 
-// Hikvision date parsing (sin timezone => Colombia)
+// Hikvision date parsing
 function parseHikvisionDate(dateStr) {
   const s = String(dateStr || '').trim();
   if (!s) return new Date();
@@ -347,34 +399,117 @@ function parseHikvisionDate(dateStr) {
 // ============================
 // DEVICE STATUS
 // ============================
-async function checkDeviceStatus() {
+async function checkDeviceStatus(deviceId) {
+  const device = deviceId 
+    ? DEVICES.find(d => d.id === deviceId) 
+    : DEVICES[0];
+    
+  if (!device) {
+    return { success: false, error: 'Dispositivo no encontrado' };
+  }
+  
   try {
-    const response = await digestRequest('GET', `${baseURL}/System/deviceInfo`, { timeout: 5000 });
-    return { success: true, connected: true, deviceInfo: response.data, brandId: DEVICE_CONFIG.brandId, location: DEVICE_CONFIG.location };
+    const deviceURL = `http://${device.ip}:${device.port}/ISAPI`;
+    const response = await digestRequestForDevice(
+      'GET', 
+      `${deviceURL}/System/deviceInfo`, 
+      device,
+      { timeout: 5000 }
+    );
+    
+    return { 
+      success: true, 
+      connected: true, 
+      deviceInfo: response.data, 
+      brandId: device.brandId, 
+      location: device.location,
+      deviceName: device.name,
+      deviceId: device.id,
+    };
   } catch (error) {
-    return { success: false, connected: false, error: error.message };
+    return { 
+      success: false, 
+      connected: false, 
+      error: error.message,
+      deviceName: device.name,
+      deviceId: device.id,
+    };
   }
 }
 
+async function checkAllDevicesStatus() {
+  const results = [];
+  
+  for (const device of DEVICES) {
+    try {
+      const deviceURL = `http://${device.ip}:${device.port}/ISAPI`;
+      const response = await digestRequestForDevice(
+        'GET', 
+        `${deviceURL}/System/deviceInfo`, 
+        device,
+        { timeout: 5000 }
+      );
+      
+      results.push({
+        deviceId: device.id,
+        deviceName: device.name,
+        ip: device.ip,
+        success: true,
+        connected: true,
+        deviceInfo: response.data,
+        brandId: device.brandId,
+        location: device.location,
+      });
+    } catch (error) {
+      results.push({
+        deviceId: device.id,
+        deviceName: device.name,
+        ip: device.ip,
+        success: false,
+        connected: false,
+        error: error.message,
+      });
+    }
+  }
+  
+  return {
+    success: true,
+    totalDevices: DEVICES.length,
+    connectedDevices: results.filter(r => r.connected).length,
+    devices: results,
+  };
+}
+
 // ============================
-// REGISTER / SYNC USERS (si lo usas)
+// REGISTER / SYNC USERS
 // ============================
-async function registerUserInDevice(cedula, fullName) {
+async function registerUserInDevice(cedula, fullName, deviceConfig = DEVICES[0]) {
   try {
+    const deviceURL = `http://${deviceConfig.ip}:${deviceConfig.port}/ISAPI`;
+    
     const userJSON = {
       UserInfo: {
         employeeNo: cedula,
         name: fullName,
         userType: 'normal',
-        Valid: { enable: true, beginTime: '2025-01-01T00:00:00', endTime: '2035-12-31T23:59:59' },
+        Valid: { 
+          enable: true, 
+          beginTime: '2025-01-01T00:00:00', 
+          endTime: '2035-12-31T23:59:59' 
+        },
         doorRight: '1',
       },
     };
 
-    const response = await digestRequest('POST', `${baseURL}/AccessControl/UserInfo/Record?format=json`, {
-      data: userJSON,
-      headers: { 'Content-Type': 'application/json' },
-    });
+    const response = await digestRequestForDevice(
+      'POST', 
+      `${deviceURL}/AccessControl/UserInfo/Record?format=json`, 
+      deviceConfig,
+      {
+        data: userJSON,
+        headers: { 'Content-Type': 'application/json' },
+      }
+    );
 
     return { success: true, data: response.data };
   } catch (error) {
@@ -382,9 +517,17 @@ async function registerUserInDevice(cedula, fullName) {
   }
 }
 
-async function syncUsersToDevice() {
+async function syncUsersToDevice(deviceId = 'device_1') {
   const db = getDb();
   const results = { success: [], errors: [], skipped: [] };
+
+  // Obtener configuración del dispositivo
+  const deviceConfig = DEVICES.find(d => d.id === deviceId) || DEVICES[0];
+  
+  console.log(`\n🔄 Sincronizando usuarios al dispositivo: ${deviceConfig.name}`);
+  console.log(`   IP: ${deviceConfig.ip}`);
+  console.log(`   Location: ${deviceConfig.location}`);
+  console.log(`   BrandId: ${deviceConfig.brandId}\n`);
 
   const syncCollection = async (collectionName) => {
     const snapshot = await db.collection(collectionName).where('active', '==', true).get();
@@ -392,30 +535,57 @@ async function syncUsersToDevice() {
     for (const doc of snapshot.docs) {
       const user = doc.data();
       if (!user.cedula || !user.fullName) {
-        results.skipped.push({ id: doc.id, collection: collectionName, name: user.fullName || 'Sin nombre', reason: 'Falta cédula o nombre' });
+        results.skipped.push({ 
+          id: doc.id, 
+          collection: collectionName, 
+          name: user.fullName || 'Sin nombre', 
+          reason: 'Falta cédula o nombre' 
+        });
         continue;
       }
 
-      const auth = validateUserAuthorization(user);
+      // Validar autorización con el dispositivo específico
+      const auth = validateUserAuthorization(user, deviceConfig);
       if (!auth.isAuthorized) {
         results.skipped.push({
           id: doc.id,
           collection: collectionName,
           cedula: user.cedula,
           name: user.fullName,
-          reason: !auth.hasLocationAccess ? 'Location no autorizada' : 'Brand no autorizada',
+          reason: !auth.hasLocationAccess 
+            ? `Location no autorizada (requiere ${deviceConfig.location})` 
+            : `Brand no autorizado (requiere ${deviceConfig.brandId})`,
         });
         continue;
       }
 
-      const r = await registerUserInDevice(user.cedula, user.fullName);
-      if (r.success) results.success.push({ id: doc.id, collection: collectionName, cedula: user.cedula, name: user.fullName });
-      else results.errors.push({ id: doc.id, collection: collectionName, cedula: user.cedula, name: user.fullName, error: r.error });
+      const r = await registerUserInDevice(user.cedula, user.fullName, deviceConfig);
+      if (r.success) {
+        results.success.push({ 
+          id: doc.id, 
+          collection: collectionName, 
+          cedula: user.cedula, 
+          name: user.fullName 
+        });
+      } else {
+        results.errors.push({ 
+          id: doc.id, 
+          collection: collectionName, 
+          cedula: user.cedula, 
+          name: user.fullName, 
+          error: r.error 
+        });
+      }
     }
   };
 
   await syncCollection('barbers');
   await syncCollection('workers');
+
+  console.log(`\n📊 Sincronización completada:`);
+  console.log(`   ✅ Exitosos: ${results.success.length}`);
+  console.log(`   ❌ Errores: ${results.errors.length}`);
+  console.log(`   ⏭️  Omitidos: ${results.skipped.length}\n`);
 
   return results;
 }
@@ -432,6 +602,7 @@ async function getAttendanceRecords(filters = {}) {
   if (filters.eventType) query = query.where('eventType', '==', filters.eventType);
   if (filters.brandId) query = query.where('brandId', '==', filters.brandId);
   if (filters.location) query = query.where('location', '==', filters.location);
+  if (filters.deviceId) query = query.where('deviceId', '==', filters.deviceId);
   if (filters.startDate) query = query.where('timestamp', '>=', new Date(filters.startDate));
   if (filters.endDate) query = query.where('timestamp', '<=', new Date(filters.endDate));
 
@@ -453,8 +624,10 @@ async function getAttendanceRecords(filters = {}) {
 async function getTodayAttendanceForUser(userId) {
   const db = getDb();
   const now = new Date();
-  const startOfDay = new Date(now); startOfDay.setHours(0, 0, 0, 0);
-  const endOfDay = new Date(now); endOfDay.setHours(23, 59, 59, 999);
+  const startOfDay = new Date(now); 
+  startOfDay.setHours(0, 0, 0, 0);
+  const endOfDay = new Date(now); 
+  endOfDay.setHours(23, 59, 59, 999);
 
   const snapshot = await db
     .collection('attendance')
@@ -467,17 +640,23 @@ async function getTodayAttendanceForUser(userId) {
   const records = [];
   snapshot.forEach(doc => {
     const data = doc.data();
-    records.push({ id: doc.id, ...data, timestamp: data.timestamp?.toDate ? data.timestamp.toDate() : null });
+    records.push({ 
+      id: doc.id, 
+      ...data, 
+      timestamp: data.timestamp?.toDate ? data.timestamp.toDate() : null 
+    });
   });
 
   return records;
 }
 
+// ============================
+// AUTO-CONVERSIÓN INTELIGENTE
+// ============================
 async function autoConvertPendingCheckIns() {
   try {
     const db = getDb();
     
-    // Obtener ayer en timezone Colombia
     const nowColombia = DateTime.now().setZone('America/Bogota');
     const yesterday = nowColombia.minus({ days: 1 });
     
@@ -490,7 +669,6 @@ async function autoConvertPendingCheckIns() {
     console.log(`📅 Revisando día: ${yesterday.toFormat('yyyy-MM-dd')}`);
     console.log(`🕐 Rango: ${startOfYesterday.toISOString()} - ${endOfYesterday.toISOString()}`);
     
-    // Obtener TODOS los registros de ayer
     const yesterdayRecords = await db
       .collection('attendance')
       .where('timestamp', '>=', admin.firestore.Timestamp.fromDate(startOfYesterday))
@@ -500,7 +678,6 @@ async function autoConvertPendingCheckIns() {
     
     console.log(`📊 Total registros de ayer: ${yesterdayRecords.size}`);
     
-    // Agrupar por usuario
     const userRecords = {};
     
     yesterdayRecords.forEach(doc => {
@@ -520,12 +697,10 @@ async function autoConvertPendingCheckIns() {
     
     console.log(`👥 Usuarios con actividad ayer: ${Object.keys(userRecords).length}`);
     
-    // Analizar cada usuario
     const recordsToConvert = [];
     const skippedSingleEvent = [];
     
     for (const [userId, records] of Object.entries(userRecords)) {
-      // Ordenar por timestamp
       records.sort((a, b) => a.timestamp - b.timestamp);
       
       const totalEvents = records.length;
@@ -535,9 +710,7 @@ async function autoConvertPendingCheckIns() {
       console.log(`   Total eventos: ${totalEvents}`);
       console.log(`   Último evento: ${lastRecord.eventType} a las ${lastRecord.timestamp.toLocaleTimeString('es-CO')}`);
       
-      // ⭐ LÓGICA INTELIGENTE
       if (totalEvents === 1 && lastRecord.eventType === 'check_in') {
-        // Usuario con UN SOLO check_in → NO modificar
         console.log(`   ℹ️  Solo tiene 1 evento (check_in) → NO modificar`);
         skippedSingleEvent.push({
           userId,
@@ -546,7 +719,6 @@ async function autoConvertPendingCheckIns() {
           timestamp: lastRecord.timestamp,
         });
       } else if (totalEvents > 1 && lastRecord.eventType === 'check_in') {
-        // Usuario con MÚLTIPLES eventos Y último es check_in → Modificar
         console.log(`   ✅ Tiene ${totalEvents} eventos y terminó con check_in → Modificar a check_out`);
         recordsToConvert.push({
           docId: lastRecord.docId,
@@ -557,7 +729,6 @@ async function autoConvertPendingCheckIns() {
           totalEvents,
         });
       } else {
-        // Último evento es check_out → OK
         console.log(`   ✅ Terminó correctamente con check_out → OK`);
       }
     }
@@ -586,7 +757,6 @@ async function autoConvertPendingCheckIns() {
       };
     }
     
-    // ⭐ MODIFICAR los registros seleccionados
     const results = [];
     const batch = db.batch();
     
@@ -601,14 +771,13 @@ async function autoConvertPendingCheckIns() {
         
         const docRef = db.collection('attendance').doc(record.docId);
         
-        // ⭐ MODIFICAR el documento
         batch.update(docRef, {
-          eventType: 'check_out', // ⭐ Cambiar de check_in a check_out
+          eventType: 'check_out',
           autoConverted: true,
           autoConvertedAt: admin.firestore.FieldValue.serverTimestamp(),
           originalEventType: 'check_in',
           conversionNote: 'Convertido automáticamente - Usuario registró múltiples eventos pero no marcó salida final',
-          totalDayEvents: record.totalEvents, // Cuántos eventos tuvo ese día
+          totalDayEvents: record.totalEvents,
         });
         
         console.log(`     ✅ Marcado para conversión`);
@@ -636,7 +805,6 @@ async function autoConvertPendingCheckIns() {
       }
     }
     
-    // ⭐ EJECUTAR BATCH UPDATE
     console.log(`\n💾 Ejecutando batch update de ${recordsToConvert.length} documentos...`);
     await batch.commit();
     console.log(`✅ Batch completado exitosamente`);
@@ -685,19 +853,12 @@ async function autoConvertPendingCheckIns() {
   }
 }
 
-/**
- * Programa la auto-conversión para ejecutarse a medianoche (00:00:30)
- */
 function scheduleAutoConvert() {
-  const { DateTime } = require('luxon');
-  
   function scheduleNext() {
     const nowColombia = DateTime.now().setZone('America/Bogota');
     
-    // Próxima medianoche + 30 segundos
     let nextRun = nowColombia.plus({ days: 1 }).startOf('day').plus({ seconds: 30 });
     
-    // Si estamos muy cerca de medianoche, ejecutar en la próxima
     if (nextRun.diff(nowColombia, 'seconds').seconds < 60) {
       nextRun = nextRun.plus({ days: 1 });
     }
@@ -712,7 +873,6 @@ function scheduleAutoConvert() {
       console.log('\n🕛 Ejecutando auto-conversión programada...');
       await autoConvertPendingCheckIns();
       
-      // Programar la próxima ejecución
       scheduleNext();
     }, msUntilRun);
   }
@@ -720,14 +880,21 @@ function scheduleAutoConvert() {
   scheduleNext();
 }
 
+// ============================
+// EXPORTS
+// ============================
 module.exports = {
+  DEVICES,
+  getDeviceConfig,
+  digestRequestForDevice,
   checkDeviceStatus,
+  checkAllDevicesStatus,
   registerUserInDevice,
   syncUsersToDevice,
   getAttendanceRecords,
   processAttendanceEvent,
   getTodayAttendanceForUser,
   setStreamWarmup,
-  autoConvertPendingCheckIns,  // ⭐ NUEVO
-  scheduleAutoConvert,          // ⭐ NUEVO
+  autoConvertPendingCheckIns,
+  scheduleAutoConvert,
 };
